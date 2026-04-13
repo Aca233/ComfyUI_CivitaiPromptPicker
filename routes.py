@@ -25,6 +25,39 @@ FETCH_RETRY_DELAY_SECONDS = 1.0
 MAX_SOURCE_PAGES_PER_RESULT_PAGE = 8
 EXPANDED_UPSTREAM_LIMIT_MULTIPLIER = 5
 MAX_UPSTREAM_PAGE_LIMIT = 120
+TAG_FILTER_KEYWORDS = {
+    "ANIMAL": ["animal", "wildlife", "beast", "creature", "pet"],
+    "ANIME": ["anime", "manga", "animestyle"],
+    "ARCHITECTURE": ["architecture", "building", "interior", "exterior", "house"],
+    "ARMOR": ["armor", "armour", "helmet", "plate mail"],
+    "ASTRONOMY": ["astronomy", "galaxy", "nebula", "planet", "starfield", "cosmos", "space"],
+    "CAR": ["car", "automobile", "vehicle", "supercar", "sedan", "coupe"],
+    "CARTOON": ["cartoon", "toon", "western animation"],
+    "CAT": ["cat", "kitten", "feline"],
+    "CITY": ["city", "urban", "downtown", "street", "skyline", "metropolis"],
+    "CLOTHING": ["clothing", "outfit", "dress", "fashion", "apparel", "garment"],
+    "COMICS": ["comics", "comic book", "comic panel"],
+    "COSTUME": ["costume", "cosplay", "uniform"],
+    "DOG": ["dog", "puppy", "canine"],
+    "DRAGON": ["dragon", "drake", "wyvern"],
+    "FANTASY": ["fantasy", "magical", "wizard", "sorcerer", "elf"],
+    "FOOD": ["food", "meal", "dish", "dessert", "fruit", "drink"],
+    "GAME CHARACTER": ["game character", "video game character", "playable character", "npc"],
+    "LANDSCAPE": ["landscape", "scenery", "mountain", "forest", "river", "valley", "vista"],
+    "LATEX CLOTHING": ["latex", "rubber suit", "pvc outfit"],
+    "MAN": [" man ", "male", "boy", "gentleman"],
+    "MODERN ART": ["modern art", "abstract", "conceptual art", "installation art"],
+    "OUTDOORS": ["outdoors", "outdoor", "nature", "outside", "wilderness"],
+    "PHOTOGRAPHY": ["photography", "photograph", "photo", "camera shot", "shot on"],
+    "PHOTOREALISTIC": ["photorealistic", "photorealism", "ultra realistic", "realistic photo"],
+    "POST APOCALYPTIC": ["post apocalyptic", "wasteland", "apocalypse", "ruined city"],
+    "ROBOT": ["robot", "android", "mecha", "cyborg"],
+    "SCI-FI": ["sci fi", "sci-fi", "science fiction", "futuristic", "cyberpunk", "spaceship"],
+    "SPORTS CAR": ["sports car", "supercar", "race car", "performance car"],
+    "SWIMWEAR": ["swimwear", "swimsuit", "bikini", "bathing suit", "beachwear"],
+    "TRANSPORTATION": ["transportation", "transport", "vehicle", "train", "bus", "truck", "airplane", "aircraft", "motorcycle", "bicycle", "ship"],
+    "WOMAN": ["woman", "women", "female", "lady"],
+}
 LOCAL_ONLY_BASE_MODEL_FILTERS = {
     "Flux",
     "SDXL",
@@ -101,6 +134,38 @@ def apply_api_filter_aliases(filters):
     return normalized
 
 
+def normalize_tag_filters(value):
+    if isinstance(value, (list, tuple, set)):
+        raw_values = value
+    else:
+        raw_values = str(value or "").split(",")
+
+    normalized = []
+    seen = set()
+    for raw_value in raw_values:
+        text = str(raw_value or "").strip().upper()
+        if not text or text not in TAG_FILTER_KEYWORDS or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    return normalized
+
+
+def normalize_tag_search_text(text):
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(text or "").lower())
+    return f" {' '.join(normalized.split())} "
+
+
+def item_matches_tag_filter(item, selected_tag):
+    keywords = TAG_FILTER_KEYWORDS.get(selected_tag, [])
+    if not keywords:
+        return True
+    search_text = normalize_tag_search_text(item.get("prompt", ""))
+    if not search_text.strip():
+        return False
+    return any(normalize_tag_search_text(keyword) in search_text for keyword in keywords)
+
+
 def uses_sparse_local_filters(filters):
     normalized = dict(filters or {})
     base_model = normalize_base_model(normalized.get("base_model", ""))
@@ -108,6 +173,7 @@ def uses_sparse_local_filters(filters):
         normalized.get("metadata_only")
         or normalized.get("nsfw") == "true"
         or base_model in LOCAL_ONLY_BASE_MODEL_FILTERS
+        or normalize_tag_filters(normalized.get("tags", []))
     )
 
 
@@ -268,6 +334,7 @@ def parse_filters(query):
     model_version_id = str(query.get("model_version_id", "")).strip()
     nsfw = normalize_nsfw(query.get("nsfw", ""))
     sort = normalize_sort(query.get("sort", ""))
+    tags = normalize_tag_filters(query.get("tags", ""))
 
     return {
         "period": period,
@@ -277,6 +344,7 @@ def parse_filters(query):
         "model_version_id": model_version_id,
         "nsfw": nsfw,
         "sort": sort,
+        "tags": tags,
     }
 
 
@@ -309,6 +377,7 @@ def apply_local_filters(items, filters):
     wanted_base_model = filters.get("base_model")
     wanted_model_version_id = filters.get("model_version_id")
     wanted_nsfw = filters.get("nsfw")
+    wanted_tags = normalize_tag_filters(filters.get("tags", []))
 
     for item in items:
         if filters.get("metadata_only") and not item.get("has_metadata"):
@@ -324,6 +393,8 @@ def apply_local_filters(items, filters):
         if wanted_model_version_id and wanted_model_version_id not in {
             str(value) for value in item.get("model_version_ids", [])
         }:
+            continue
+        if wanted_tags and not all(item_matches_tag_filter(item, selected_tag) for selected_tag in wanted_tags):
             continue
         filtered.append(item)
     return filtered
@@ -343,7 +414,7 @@ def build_diagnostics(upstream_items, filtered_items, next_page, filters):
                 empty_reason = "no_public_model_version_images"
             elif filters.get("model_id"):
                 empty_reason = "no_public_model_images"
-            elif filters.get("base_model") or filters.get("period") or filters.get("nsfw"):
+            elif filters.get("base_model") or filters.get("period") or filters.get("nsfw") or filters.get("tags"):
                 empty_reason = "no_images_for_filters"
             else:
                 empty_reason = "no_images_returned"

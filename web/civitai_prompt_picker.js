@@ -18,6 +18,11 @@ import {
 import { buildImageFallbackChain } from "./civitai_prompt_picker_image_fallback.js";
 import { buildCivitaiImagePageUrl } from "./civitai_prompt_picker_links.js";
 import {
+    buildTagFilterOptions,
+    normalizeSelectedTags,
+    toggleTagSelection,
+} from "./civitai_prompt_picker_tags.js";
+import {
     shouldDeferPrefillAfterFirstBatch,
     shouldPrefillMore,
     shouldScheduleViewportPrefill,
@@ -60,6 +65,7 @@ const OUTPUT_SCHEMA = [
     { name: "negative_prompt", type: "STRING" },
     { name: "width", type: "INT" },
     { name: "height", type: "INT" },
+    { name: "image", type: "IMAGE" },
 ];
 const BASE_MODEL_SUGGESTIONS = [
     "Pony",
@@ -125,6 +131,41 @@ function ensureStyles() {
         .civitai-picker-field label {
             font-size: 11px;
             color: rgba(232, 238, 247, 0.72);
+        }
+        .civitai-picker-tags-section {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            min-width: 0;
+        }
+        .civitai-picker-tags-label {
+            font-size: 11px;
+            color: rgba(232, 238, 247, 0.72);
+        }
+        .civitai-picker-tag-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            align-items: flex-start;
+        }
+        .civitai-picker-tag-chip {
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            background: rgba(27, 33, 43, 0.94);
+            color: rgba(247, 251, 255, 0.88);
+            border-radius: 999px;
+            padding: 4px 9px;
+            font-size: 11px;
+            line-height: 1.2;
+            cursor: pointer;
+        }
+        .civitai-picker-tag-chip.is-active {
+            border-color: rgba(86, 184, 255, 0.85);
+            background: rgba(18, 53, 82, 0.96);
+            color: #f7fbff;
+        }
+        .civitai-picker-tag-chip:disabled {
+            opacity: 0.5;
+            cursor: default;
         }
         .civitai-picker-input,
         .civitai-picker-select {
@@ -482,6 +523,9 @@ function buildEndpoint(limit, nextPage, filters) {
     if (filters.sort) {
         params.set("sort", filters.sort);
     }
+    if (filters.tags?.length) {
+        params.set("tags", filters.tags.join(","));
+    }
     return `/civitai-prompt-picker/images?${params.toString()}`;
 }
 
@@ -565,6 +609,7 @@ class CivitaiPromptPickerUI {
                 modelVersionId: "",
                 nsfw: "",
                 sort: "",
+                tags: [],
             },
         };
         this.loadingMore = false;
@@ -594,6 +639,7 @@ class CivitaiPromptPickerUI {
         this.heightTextWidget = findWidget(node, "selected_height_text");
         this.imageIdWidget = findWidget(node, "selected_image_id");
         this.nextPageWidget = findWidget(node, "next_page");
+        this.imageUrlWidget = findWidget(node, "selected_image_url");
         this.limitWidget = findWidget(node, "limit");
 
         this.renderShell();
@@ -671,6 +717,25 @@ class CivitaiPromptPickerUI {
             toggleWrap,
         );
 
+        const tagsSection = document.createElement("div");
+        tagsSection.className = "civitai-picker-tags-section";
+        const tagsLabel = document.createElement("div");
+        tagsLabel.className = "civitai-picker-tags-label";
+        tagsLabel.textContent = this.t("tagsLabel");
+        this.tagBarEl = document.createElement("div");
+        this.tagBarEl.className = "civitai-picker-tag-bar";
+        this.tagButtons = new Map();
+        for (const option of buildTagFilterOptions(this.language)) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "civitai-picker-tag-chip";
+            button.textContent = option.label;
+            button.addEventListener("click", () => this.toggleTagFilter(option.value));
+            this.tagButtons.set(option.value, button);
+            this.tagBarEl.appendChild(button);
+        }
+        tagsSection.append(tagsLabel, this.tagBarEl);
+
         const actions = document.createElement("div");
         actions.className = "civitai-picker-actions";
 
@@ -717,6 +782,7 @@ class CivitaiPromptPickerUI {
 
         this.root.append(
             toolbar,
+            tagsSection,
             actions,
             this.feedGridEl,
             this.favoritesGridEl,
@@ -725,6 +791,7 @@ class CivitaiPromptPickerUI {
             this.previewEl,
         );
         this.element.appendChild(this.root);
+        this.syncTagFilterUi();
         this.syncBaseModelControls();
         this.syncViewModeUi();
         this.renderState();
@@ -893,7 +960,24 @@ class CivitaiPromptPickerUI {
             modelVersionId: this.modelVersionIdInput.value.trim(),
             nsfw: this.nsfwSelect.value,
             sort: this.sortSelect.value,
+            tags: normalizeSelectedTags(this.state.filters.tags),
         };
+    }
+
+    toggleTagFilter(value) {
+        this.state.filters.tags = toggleTagSelection(this.state.filters.tags, value);
+        this.syncTagFilterUi();
+        this.requestReload({ immediate: true });
+    }
+
+    syncTagFilterUi() {
+        const selectedTags = new Set(normalizeSelectedTags(this.state.filters.tags));
+        for (const [value, button] of this.tagButtons?.entries?.() || []) {
+            if (!button) {
+                continue;
+            }
+            button.classList.toggle("is-active", selectedTags.has(value));
+        }
     }
 
     isFavoritesView() {
@@ -942,6 +1026,9 @@ class CivitaiPromptPickerUI {
             if (control) {
                 control.disabled = disabled;
             }
+        }
+        for (const button of this.tagButtons?.values?.() || []) {
+            button.disabled = disabled;
         }
         this.updateFavoritesButtonLabel();
         this.loaderEl.hidden = disabled || !(this.loadingMore && this.state.items.length > 0);
@@ -1058,7 +1145,8 @@ class CivitaiPromptPickerUI {
             filters?.modelId ||
             filters?.modelVersionId ||
             filters?.metadataOnly ||
-            filters?.nsfw
+            filters?.nsfw ||
+            filters?.tags?.length
         );
         const batchSize = isFilteredLookup ? FILTERED_REQUEST_BATCH_SIZE : DEFAULT_REQUEST_BATCH_SIZE;
         if (this.limitWidget) {
@@ -1072,7 +1160,8 @@ class CivitaiPromptPickerUI {
             filters?.modelId ||
             filters?.modelVersionId ||
             filters?.metadataOnly ||
-            filters?.nsfw
+            filters?.nsfw ||
+            filters?.tags?.length
             ? FILTERED_EMPTY_PAGE_CHAIN_LIMIT
             : DEFAULT_EMPTY_PAGE_CHAIN_LIMIT;
     }
@@ -1529,6 +1618,9 @@ class CivitaiPromptPickerUI {
         if (this.imageIdWidget) {
             this.imageIdWidget.value = selectedId;
         }
+        if (this.imageUrlWidget) {
+            this.imageUrlWidget.value = item.image_url || "";
+        }
 
         this.previewEl.value = item.prompt || "";
         const sizeText = item.size_text || [item.width_text, item.height_text].filter(Boolean).join("x");
@@ -1569,6 +1661,7 @@ app.registerExtension({
             hideWidget(findWidget(this, "selected_height_text"));
             hideWidget(findWidget(this, "selected_image_id"));
             hideWidget(findWidget(this, "next_page"));
+            hideWidget(findWidget(this, "selected_image_url"));
             hideWidget(findWidget(this, "limit"));
 
             const element = document.createElement("div");

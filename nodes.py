@@ -1,4 +1,14 @@
+import io
+
+import numpy as np
+import requests
+import torch
+from PIL import Image, ImageOps
+
+
 class CivitaiPromptPicker:
+    REQUEST_HEADERS = {"User-Agent": "ComfyUI-CivitaiPromptPicker/1.0"}
+
     @staticmethod
     def _parse_dimension(value):
         try:
@@ -6,6 +16,23 @@ class CivitaiPromptPicker:
         except (TypeError, ValueError):
             return 0
         return parsed if parsed > 0 else 0
+
+    @staticmethod
+    def _empty_image_tensor():
+        return torch.zeros((1, 1, 1, 3), dtype=torch.float32)
+
+    @classmethod
+    def _load_image_tensor_from_url(cls, image_url):
+        response = requests.get(
+            str(image_url or "").strip(),
+            headers=cls.REQUEST_HEADERS,
+            timeout=35,
+        )
+        response.raise_for_status()
+        with Image.open(io.BytesIO(response.content)) as image:
+            normalized_image = ImageOps.exif_transpose(image).convert("RGB")
+            image_array = np.asarray(normalized_image, dtype=np.float32) / 255.0
+        return torch.from_numpy(image_array).unsqueeze(0)
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -18,11 +45,12 @@ class CivitaiPromptPicker:
                 "selected_height_text": ("STRING", {"default": ""}),
                 "selected_image_id": ("STRING", {"default": ""}),
                 "next_page": ("STRING", {"default": ""}),
+                "selected_image_url": ("STRING", {"default": ""}),
             }
         }
 
-    RETURN_TYPES = ("STRING", "STRING", "INT", "INT")
-    RETURN_NAMES = ("prompt", "negative_prompt", "width", "height")
+    RETURN_TYPES = ("STRING", "STRING", "INT", "INT", "IMAGE")
+    RETURN_NAMES = ("prompt", "negative_prompt", "width", "height", "image")
     FUNCTION = "pick_prompt"
     CATEGORY = "text/Civitai"
 
@@ -35,15 +63,23 @@ class CivitaiPromptPicker:
         selected_height_text,
         selected_image_id,
         next_page,
+        selected_image_url,
     ):
         _ = (limit, selected_image_id, next_page)
         width_value = self._parse_dimension(selected_width_text)
         height_value = self._parse_dimension(selected_height_text)
+        image_tensor = self._empty_image_tensor()
+        if str(selected_image_url or "").strip():
+            try:
+                image_tensor = self._load_image_tensor_from_url(selected_image_url)
+            except Exception:
+                image_tensor = self._empty_image_tensor()
         return (
             selected_prompt or "",
             selected_negative_prompt or "",
             width_value,
             height_value,
+            image_tensor,
         )
 
 

@@ -1,9 +1,11 @@
 import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
 import {
+    buildAspectRatioOptions,
     buildBaseModelOptions,
     buildNsfwOptions,
     buildPeriodOptions,
+    buildResolutionOptions,
     buildSortOptions,
     resolveUiLanguage,
     translate,
@@ -54,6 +56,8 @@ const FILTERED_EMPTY_PAGE_CHAIN_LIMIT = 40;
 const DEFAULT_REQUEST_BATCH_SIZE = 16;
 const FILTERED_REQUEST_BATCH_SIZE = 24;
 const FILTER_INPUT_DEBOUNCE_MS = 350;
+const MODEL_SEARCH_DEBOUNCE_MS = 220;
+const MODEL_SEARCH_RESULT_LIMIT = 8;
 const BASE_MODEL_CUSTOM_VALUE = "__custom__";
 const STORAGE_KEYS = {
     apiKey: "comfy.civitaiPromptPicker.apiKey",
@@ -118,7 +122,7 @@ function ensureStyles() {
         }
         .civitai-picker-toolbar {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
             gap: 8px;
             flex: 0 0 auto;
         }
@@ -523,10 +527,35 @@ function buildEndpoint(limit, nextPage, filters) {
     if (filters.sort) {
         params.set("sort", filters.sort);
     }
+    if (filters.aspectRatio) {
+        params.set("aspect_ratio", filters.aspectRatio);
+    }
+    if (filters.minResolution) {
+        params.set("min_resolution", filters.minResolution);
+    }
     if (filters.tags?.length) {
         params.set("tags", filters.tags.join(","));
     }
+    if (filters.blockTags?.length) {
+        params.set("block_tags", filters.blockTags.join(","));
+    }
     return `/civitai-prompt-picker/images?${params.toString()}`;
+}
+
+
+function buildModelSearchEndpoint(query, limit = MODEL_SEARCH_RESULT_LIMIT) {
+    const params = new URLSearchParams();
+    params.set("limit", String(limit || MODEL_SEARCH_RESULT_LIMIT));
+    params.set("query", String(query || "").trim());
+    return `/civitai-prompt-picker/models?${params.toString()}`;
+}
+
+
+function normalizeLookupText(value) {
+    return String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, " ");
 }
 
 
@@ -609,7 +638,10 @@ class CivitaiPromptPickerUI {
                 modelVersionId: "",
                 nsfw: "",
                 sort: "",
+                aspectRatio: "",
+                minResolution: "",
                 tags: [],
+                blockTags: [],
             },
         };
         this.loadingMore = false;
@@ -618,6 +650,11 @@ class CivitaiPromptPickerUI {
         this.requestControl = createRequestControlState();
         this.activeAbortController = null;
         this.activeLoadToken = 0;
+        this.baseModelSearchTimer = null;
+        this.baseModelSearchAbortController = null;
+        this.baseModelSearchToken = 0;
+        this.baseModelSearchResults = [];
+        this.autoResolvedModelSuggestion = null;
         this.deferredPrefillRequested = false;
         this.viewportPrefillScheduled = false;
         this.cardElementsByMode = {
@@ -663,6 +700,8 @@ class CivitaiPromptPickerUI {
         this.periodSelect = makeSelect(buildPeriodOptions(this.language));
         this.sortSelect = makeSelect(buildSortOptions(this.language));
         this.nsfwSelect = makeSelect(buildNsfwOptions(this.language));
+        this.aspectRatioSelect = makeSelect(buildAspectRatioOptions(this.language));
+        this.resolutionSelect = makeSelect(buildResolutionOptions(this.language));
         this.nsfwSelect.value = readStoredValue(STORAGE_KEYS.nsfw);
 
         this.baseModelSelect = makeSelect(
@@ -671,13 +710,23 @@ class CivitaiPromptPickerUI {
         this.baseModelInput = document.createElement("input");
         this.baseModelInput.className = "civitai-picker-input";
         this.baseModelInput.placeholder = this.t("baseModelPlaceholder");
+        this.baseModelInput.autocomplete = "off";
+        this.baseModelInput.spellcheck = false;
         this.baseModelInput.hidden = true;
+        this.baseModelSuggestionsEl = document.createElement("datalist");
+        this.baseModelSuggestionsEl.id = `civitai-picker-model-search-${String(this.node?.id || "node")}`;
+        this.baseModelInput.setAttribute("list", this.baseModelSuggestionsEl.id);
 
         const baseModelField = document.createElement("div");
         baseModelField.className = "civitai-picker-field";
         const baseModelLabel = document.createElement("label");
         baseModelLabel.textContent = this.t("baseModelLabel");
-        baseModelField.append(baseModelLabel, this.baseModelSelect, this.baseModelInput);
+        baseModelField.append(
+            baseModelLabel,
+            this.baseModelSelect,
+            this.baseModelInput,
+            this.baseModelSuggestionsEl
+        );
 
         this.modelIdInput = document.createElement("input");
         this.modelIdInput.className = "civitai-picker-input";
@@ -710,6 +759,8 @@ class CivitaiPromptPickerUI {
             makeField(this.t("periodLabel"), this.periodSelect),
             makeField(this.t("sortLabel"), this.sortSelect),
             makeField(this.t("nsfwLabel"), this.nsfwSelect),
+            makeField(this.t("aspectRatioLabel"), this.aspectRatioSelect),
+            makeField(this.t("resolutionLabel"), this.resolutionSelect),
             baseModelField,
             makeField(this.t("modelIdLabel"), this.modelIdInput),
             makeField(this.t("modelVersionIdLabel"), this.modelVersionIdInput),
@@ -734,7 +785,22 @@ class CivitaiPromptPickerUI {
             this.tagButtons.set(option.value, button);
             this.tagBarEl.appendChild(button);
         }
-        tagsSection.append(tagsLabel, this.tagBarEl);
+        const blockTagsLabel = document.createElement("div");
+        blockTagsLabel.className = "civitai-picker-tags-label";
+        blockTagsLabel.textContent = this.t("blockTagsLabel");
+        this.blockTagBarEl = document.createElement("div");
+        this.blockTagBarEl.className = "civitai-picker-tag-bar";
+        this.blockTagButtons = new Map();
+        for (const option of buildTagFilterOptions(this.language)) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "civitai-picker-tag-chip";
+            button.textContent = option.label;
+            button.addEventListener("click", () => this.toggleBlockTagFilter(option.value));
+            this.blockTagButtons.set(option.value, button);
+            this.blockTagBarEl.appendChild(button);
+        }
+        tagsSection.append(tagsLabel, this.tagBarEl, blockTagsLabel, this.blockTagBarEl);
 
         const actions = document.createElement("div");
         actions.className = "civitai-picker-actions";
@@ -792,6 +858,7 @@ class CivitaiPromptPickerUI {
         );
         this.element.appendChild(this.root);
         this.syncTagFilterUi();
+        this.syncBlockTagFilterUi();
         this.syncBaseModelControls();
         this.syncViewModeUi();
         this.renderState();
@@ -816,6 +883,8 @@ class CivitaiPromptPickerUI {
 
         this.periodSelect.addEventListener("change", triggerReload);
         this.sortSelect.addEventListener("change", triggerReload);
+        this.aspectRatioSelect.addEventListener("change", triggerReload);
+        this.resolutionSelect.addEventListener("change", triggerReload);
         this.nsfwSelect.addEventListener("change", () => {
             writeStoredValue(STORAGE_KEYS.nsfw, this.nsfwSelect.value);
             triggerReload();
@@ -824,18 +893,43 @@ class CivitaiPromptPickerUI {
             this.syncBaseModelControls();
             triggerReload();
         });
-        this.baseModelInput.addEventListener("input", scheduleReload);
-        this.baseModelInput.addEventListener("change", triggerReload);
-        this.baseModelInput.addEventListener("keydown", triggerReloadOnEnter);
+        this.baseModelInput.addEventListener("input", () => {
+            this.handleBaseModelInputEdit();
+            scheduleReload();
+        });
+        this.baseModelInput.addEventListener("change", async () => {
+            await this.commitBaseModelInputSelection();
+            triggerReload();
+        });
+        this.baseModelInput.addEventListener("keydown", async (event) => {
+            if (event.key !== "Enter") {
+                return;
+            }
+            event.preventDefault();
+            await this.commitBaseModelInputSelection();
+            triggerReload();
+        });
         this.metadataOnlyInput.addEventListener("change", triggerReload);
-        this.modelIdInput.addEventListener("input", scheduleReload);
-        this.modelVersionIdInput.addEventListener("input", scheduleReload);
+        this.modelIdInput.addEventListener("input", () => {
+            this.autoResolvedModelSuggestion = null;
+            scheduleReload();
+        });
+        this.modelVersionIdInput.addEventListener("input", () => {
+            this.autoResolvedModelSuggestion = null;
+            scheduleReload();
+        });
         this.apiKeyInput.addEventListener("input", () => {
             writeStoredValue(STORAGE_KEYS.apiKey, this.apiKeyInput.value.trim());
             scheduleReload();
         });
-        this.modelIdInput.addEventListener("change", triggerReload);
-        this.modelVersionIdInput.addEventListener("change", triggerReload);
+        this.modelIdInput.addEventListener("change", () => {
+            this.autoResolvedModelSuggestion = null;
+            triggerReload();
+        });
+        this.modelVersionIdInput.addEventListener("change", () => {
+            this.autoResolvedModelSuggestion = null;
+            triggerReload();
+        });
         this.apiKeyInput.addEventListener("change", () => {
             writeStoredValue(STORAGE_KEYS.apiKey, this.apiKeyInput.value.trim());
             triggerReload();
@@ -870,6 +964,217 @@ class CivitaiPromptPickerUI {
             this.reloadTimer = null;
             this.requestReload({ immediate: true });
         }, FILTER_INPUT_DEBOUNCE_MS);
+    }
+
+    isCustomBaseModelMode() {
+        return this.baseModelSelect.value === BASE_MODEL_CUSTOM_VALUE;
+    }
+
+    renderBaseModelSearchSuggestions() {
+        this.baseModelSuggestionsEl.replaceChildren();
+        for (const item of this.baseModelSearchResults) {
+            const option = document.createElement("option");
+            option.value = item.name || item.label || "";
+            option.label = item.label || item.name || "";
+            this.baseModelSuggestionsEl.appendChild(option);
+        }
+    }
+
+    clearAutoResolvedModelSuggestion() {
+        if (!this.autoResolvedModelSuggestion) {
+            return;
+        }
+
+        if (this.modelVersionIdInput?.value?.trim() === this.autoResolvedModelSuggestion.modelVersionId) {
+            this.modelVersionIdInput.value = "";
+        }
+        this.autoResolvedModelSuggestion = null;
+    }
+
+    resetBaseModelSearchState({ clearResolved = true } = {}) {
+        if (this.baseModelSearchTimer) {
+            window.clearTimeout(this.baseModelSearchTimer);
+            this.baseModelSearchTimer = null;
+        }
+        this.baseModelSearchAbortController?.abort?.();
+        this.baseModelSearchAbortController = null;
+        this.baseModelSearchResults = [];
+        this.renderBaseModelSearchSuggestions();
+        if (clearResolved) {
+            this.clearAutoResolvedModelSuggestion();
+        }
+    }
+
+    handleBaseModelInputEdit() {
+        if (!this.isCustomBaseModelMode()) {
+            return;
+        }
+
+        const query = this.baseModelInput.value.trim();
+        const lastResolvedName = this.autoResolvedModelSuggestion?.name || "";
+        if (lastResolvedName && normalizeLookupText(query) !== normalizeLookupText(lastResolvedName)) {
+            this.clearAutoResolvedModelSuggestion();
+        }
+        this.scheduleBaseModelSearch();
+    }
+
+    scheduleBaseModelSearch() {
+        if (!this.isCustomBaseModelMode()) {
+            this.resetBaseModelSearchState({ clearResolved: false });
+            return;
+        }
+
+        if (this.baseModelSearchTimer) {
+            window.clearTimeout(this.baseModelSearchTimer);
+        }
+        this.baseModelSearchTimer = window.setTimeout(() => {
+            this.baseModelSearchTimer = null;
+            this.loadBaseModelSuggestions({ preferSingle: false, setStatus: false });
+        }, MODEL_SEARCH_DEBOUNCE_MS);
+    }
+
+    findBaseModelSuggestionMatch(query) {
+        const lookup = normalizeLookupText(query);
+        if (!lookup) {
+            return null;
+        }
+        return this.baseModelSearchResults.find((item) =>
+            normalizeLookupText(item?.name) === lookup ||
+            normalizeLookupText(item?.label) === lookup
+        ) || null;
+    }
+
+    applyAutoResolvedModelSuggestion(item, { setStatus = false } = {}) {
+        const modelVersionId = String(item?.model_version_id || "").trim();
+        const name = String(item?.name || "").trim();
+        const canOverwriteVersion = !this.modelVersionIdInput.value.trim() ||
+            this.modelVersionIdInput.value.trim() === (this.autoResolvedModelSuggestion?.modelVersionId || "");
+        if (!modelVersionId || !name || !canOverwriteVersion) {
+            return null;
+        }
+
+        this.modelVersionIdInput.value = modelVersionId;
+        this.autoResolvedModelSuggestion = {
+            modelVersionId,
+            name,
+        };
+        if (setStatus) {
+            this.setStatus(
+                this.t("modelSearchResolved", {
+                    name,
+                    modelVersionId,
+                })
+            );
+        }
+        return item;
+    }
+
+    async loadBaseModelSuggestions({ query = this.baseModelInput.value.trim(), preferSingle = false, setStatus = false } = {}) {
+        if (!this.isCustomBaseModelMode()) {
+            this.resetBaseModelSearchState({ clearResolved: false });
+            return [];
+        }
+
+        const trimmedQuery = String(query || "").trim();
+        if (!trimmedQuery || trimmedQuery.length < 2) {
+            this.baseModelSearchResults = [];
+            this.renderBaseModelSearchSuggestions();
+            if (!trimmedQuery) {
+                this.clearAutoResolvedModelSuggestion();
+            }
+            return [];
+        }
+
+        this.baseModelSearchAbortController?.abort?.();
+        const abortController = typeof AbortController !== "undefined" ? new AbortController() : null;
+        this.baseModelSearchAbortController = abortController;
+        const searchToken = ++this.baseModelSearchToken;
+        const apiKey = this.apiKeyInput.value.trim();
+
+        try {
+            const response = await api.fetchApi(
+                buildModelSearchEndpoint(trimmedQuery, MODEL_SEARCH_RESULT_LIMIT),
+                {
+                    cache: "no-store",
+                    headers: apiKey ? { "X-Civitai-Api-Key": apiKey } : undefined,
+                    signal: abortController?.signal,
+                }
+            );
+            const payload = await response.json();
+            if (!response.ok) {
+                throw new Error(payload?.error || `HTTP ${response.status}`);
+            }
+            if (searchToken !== this.baseModelSearchToken) {
+                return this.baseModelSearchResults;
+            }
+
+            this.baseModelSearchResults = Array.isArray(payload?.items) ? payload.items : [];
+            this.renderBaseModelSearchSuggestions();
+
+            const matched = this.findBaseModelSuggestionMatch(trimmedQuery);
+            if (matched) {
+                this.applyAutoResolvedModelSuggestion(matched, { setStatus });
+            } else if (preferSingle && this.baseModelSearchResults.length === 1) {
+                this.applyAutoResolvedModelSuggestion(this.baseModelSearchResults[0], { setStatus });
+            }
+
+            if (
+                setStatus &&
+                !matched &&
+                !this.autoResolvedModelSuggestion &&
+                this.baseModelSearchResults.length > 1
+            ) {
+                this.setStatus(
+                    this.t("modelSearchChooseCandidate", {
+                        count: this.baseModelSearchResults.length,
+                    })
+                );
+            }
+
+            return this.baseModelSearchResults;
+        } catch (error) {
+            if (!isAbortError(error)) {
+                this.baseModelSearchResults = [];
+                this.renderBaseModelSearchSuggestions();
+            }
+            return [];
+        } finally {
+            if (this.baseModelSearchAbortController === abortController) {
+                this.baseModelSearchAbortController = null;
+            }
+        }
+    }
+
+    async commitBaseModelInputSelection() {
+        await this.loadBaseModelSuggestions({ preferSingle: true, setStatus: true });
+    }
+
+    async maybeResolveCustomModelSearch(filters) {
+        if (
+            !this.isCustomBaseModelMode() ||
+            !filters?.baseModel ||
+            filters?.modelId ||
+            filters?.modelVersionId
+        ) {
+            return "";
+        }
+
+        const suggestions = await this.loadBaseModelSuggestions({
+            query: filters.baseModel,
+            preferSingle: false,
+            setStatus: false,
+        });
+        if (suggestions.length === 1) {
+            const applied = this.applyAutoResolvedModelSuggestion(suggestions[0], { setStatus: true });
+            if (applied) {
+                this.requestControl.pendingReset = true;
+                return "reloading";
+            }
+        }
+        if (suggestions.length > 1) {
+            return "candidates";
+        }
+        return "";
     }
 
     syncFromWidgets() {
@@ -930,6 +1235,9 @@ class CivitaiPromptPickerUI {
     syncBaseModelControls() {
         const customSelected = this.baseModelSelect.value === BASE_MODEL_CUSTOM_VALUE;
         this.baseModelInput.hidden = !customSelected;
+        if (!customSelected) {
+            this.resetBaseModelSearchState();
+        }
     }
 
     rememberBaseModels(items) {
@@ -948,19 +1256,27 @@ class CivitaiPromptPickerUI {
     }
 
     readFilters() {
-        const baseModel =
+        const rawBaseModel =
             this.baseModelSelect.value === BASE_MODEL_CUSTOM_VALUE
                 ? this.baseModelInput.value.trim()
                 : this.baseModelSelect.value;
+        const usesAutoResolvedModelVersion = Boolean(
+            this.autoResolvedModelSuggestion &&
+            this.modelVersionIdInput.value.trim() === this.autoResolvedModelSuggestion.modelVersionId &&
+            normalizeLookupText(this.baseModelInput.value) === normalizeLookupText(this.autoResolvedModelSuggestion.name)
+        );
         return {
             period: this.periodSelect.value,
-            baseModel,
+            baseModel: usesAutoResolvedModelVersion ? "" : rawBaseModel,
             metadataOnly: this.metadataOnlyInput.checked,
             modelId: this.modelIdInput.value.trim(),
             modelVersionId: this.modelVersionIdInput.value.trim(),
             nsfw: this.nsfwSelect.value,
             sort: this.sortSelect.value,
+            aspectRatio: this.aspectRatioSelect.value,
+            minResolution: this.resolutionSelect.value,
             tags: normalizeSelectedTags(this.state.filters.tags),
+            blockTags: normalizeSelectedTags(this.state.filters.blockTags),
         };
     }
 
@@ -973,6 +1289,22 @@ class CivitaiPromptPickerUI {
     syncTagFilterUi() {
         const selectedTags = new Set(normalizeSelectedTags(this.state.filters.tags));
         for (const [value, button] of this.tagButtons?.entries?.() || []) {
+            if (!button) {
+                continue;
+            }
+            button.classList.toggle("is-active", selectedTags.has(value));
+        }
+    }
+
+    toggleBlockTagFilter(value) {
+        this.state.filters.blockTags = toggleTagSelection(this.state.filters.blockTags, value);
+        this.syncBlockTagFilterUi();
+        this.requestReload({ immediate: true });
+    }
+
+    syncBlockTagFilterUi() {
+        const selectedTags = new Set(normalizeSelectedTags(this.state.filters.blockTags));
+        for (const [value, button] of this.blockTagButtons?.entries?.() || []) {
             if (!button) {
                 continue;
             }
@@ -1016,6 +1348,8 @@ class CivitaiPromptPickerUI {
             this.periodSelect,
             this.sortSelect,
             this.nsfwSelect,
+            this.aspectRatioSelect,
+            this.resolutionSelect,
             this.baseModelSelect,
             this.baseModelInput,
             this.modelIdInput,
@@ -1028,6 +1362,9 @@ class CivitaiPromptPickerUI {
             }
         }
         for (const button of this.tagButtons?.values?.() || []) {
+            button.disabled = disabled;
+        }
+        for (const button of this.blockTagButtons?.values?.() || []) {
             button.disabled = disabled;
         }
         this.updateFavoritesButtonLabel();
@@ -1146,7 +1483,10 @@ class CivitaiPromptPickerUI {
             filters?.modelVersionId ||
             filters?.metadataOnly ||
             filters?.nsfw ||
-            filters?.tags?.length
+            filters?.aspectRatio ||
+            filters?.minResolution ||
+            filters?.tags?.length ||
+            filters?.blockTags?.length
         );
         const batchSize = isFilteredLookup ? FILTERED_REQUEST_BATCH_SIZE : DEFAULT_REQUEST_BATCH_SIZE;
         if (this.limitWidget) {
@@ -1161,7 +1501,10 @@ class CivitaiPromptPickerUI {
             filters?.modelVersionId ||
             filters?.metadataOnly ||
             filters?.nsfw ||
-            filters?.tags?.length
+            filters?.aspectRatio ||
+            filters?.minResolution ||
+            filters?.tags?.length ||
+            filters?.blockTags?.length
             ? FILTERED_EMPTY_PAGE_CHAIN_LIMIT
             : DEFAULT_EMPTY_PAGE_CHAIN_LIMIT;
     }
@@ -1538,16 +1881,26 @@ class CivitaiPromptPickerUI {
             }
 
             if (!this.state.items.length) {
-                this.renderEmptyState(this.t("noVisibleImages"));
-                const reasonMessage = describeEmptyReason(this.t, this.lastDiagnostics, filters);
-                if (this.state.hasMore) {
-                    this.setStatus(
-                        reasonMessage
-                            ? this.t("hasMoreReason", { reasonMessage })
-                            : this.t("continueScrolling"),
-                    );
+                const modelSearchState = await this.maybeResolveCustomModelSearch(filters);
+                if (modelSearchState === "reloading") {
+                    this.renderEmptyState(this.t("loadingThumbnails"));
                 } else {
-                    this.setStatus(reasonMessage || this.t("noMatchingImages"));
+                    this.renderEmptyState(this.t("noVisibleImages"));
+                    const reasonMessage = describeEmptyReason(this.t, this.lastDiagnostics, filters);
+                    const guidanceMessage = modelSearchState === "candidates"
+                        ? this.t("modelSearchChooseCandidate", {
+                            count: this.baseModelSearchResults.length,
+                        })
+                        : reasonMessage;
+                    if (this.state.hasMore) {
+                        this.setStatus(
+                            guidanceMessage
+                                ? this.t("hasMoreReason", { reasonMessage: guidanceMessage })
+                                : this.t("continueScrolling"),
+                        );
+                    } else {
+                        this.setStatus(guidanceMessage || this.t("noMatchingImages"));
+                    }
                 }
             } else if (!this.state.hasMore) {
                 this.setStatus(this.t("loadedBottom", { count: this.state.items.length }));

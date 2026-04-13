@@ -6,6 +6,7 @@ from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
 
 CIVITAI_IMAGES_URL = "https://civitai.com/api/v1/images"
+CIVITAI_MODELS_URL = "https://civitai.com/api/v1/models"
 CIVITAI_MODEL_VERSION_URL = "https://civitai.com/api/v1/model-versions"
 ALLOWED_PERIODS = {"Day", "Week", "Month", "Year", "AllTime"}
 ALLOWED_NSFW_VALUES = {"true", "false", "None", "Soft", "Mature", "X"}
@@ -16,6 +17,19 @@ ALLOWED_SORT_VALUES = {
     "Newest",
     "Oldest",
 }
+ALLOWED_ASPECT_RATIO_VALUES = {
+    "PORTRAIT",
+    "LANDSCAPE",
+    "SQUARE",
+    "9:16",
+    "3:4",
+    "2:3",
+    "1:1",
+    "3:2",
+    "4:3",
+    "16:9",
+}
+ALLOWED_MIN_RESOLUTION_VALUES = {"1024", "1536", "2048", "3072"}
 DEFAULT_TIMEOUT = ClientTimeout(total=35)
 DEFAULT_HEADERS = {"User-Agent": "ComfyUI-CivitaiPromptPicker/1.0"}
 MODEL_VERSION_TO_MODEL_ID_CACHE = {}
@@ -25,6 +39,8 @@ FETCH_RETRY_DELAY_SECONDS = 1.0
 MAX_SOURCE_PAGES_PER_RESULT_PAGE = 8
 EXPANDED_UPSTREAM_LIMIT_MULTIPLIER = 5
 MAX_UPSTREAM_PAGE_LIMIT = 120
+SQUARE_RATIO_TOLERANCE = 0.04
+EXACT_RATIO_TOLERANCE = 0.05
 TAG_FILTER_KEYWORDS = {
     "ANIMAL": ["animal", "wildlife", "beast", "creature", "pet"],
     "ANIME": ["anime", "manga", "animestyle"],
@@ -100,6 +116,10 @@ def normalize_base_model(base_model):
         "sdxl turbo": "SDXL Turbo",
         "sd 3": "SD 3",
         "sd3": "SD 3",
+        "zimageturbo": "ZImageTurbo",
+        "zimage turbo": "ZImageTurbo",
+        "zimagebase": "ZImageBase",
+        "zimage base": "ZImageBase",
     }
     if compact in aliases:
         return aliases[compact]
@@ -174,6 +194,9 @@ def uses_sparse_local_filters(filters):
         or normalized.get("nsfw") == "true"
         or base_model in LOCAL_ONLY_BASE_MODEL_FILTERS
         or normalize_tag_filters(normalized.get("tags", []))
+        or normalize_tag_filters(normalized.get("block_tags", []))
+        or normalize_aspect_ratio(normalized.get("aspect_ratio", ""))
+        or normalize_min_resolution(normalized.get("min_resolution", ""))
     )
 
 
@@ -217,6 +240,27 @@ def normalize_sort(value):
     }
     normalized = aliases.get(text.lower(), text)
     return normalized if normalized in ALLOWED_SORT_VALUES else ""
+
+
+def normalize_aspect_ratio(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    aliases = {
+        "portrait": "PORTRAIT",
+        "landscape": "LANDSCAPE",
+        "square": "SQUARE",
+    }
+    normalized = aliases.get(text.lower(), text.upper())
+    return normalized if normalized in ALLOWED_ASPECT_RATIO_VALUES else ""
+
+
+def normalize_min_resolution(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return text if text in ALLOWED_MIN_RESOLUTION_VALUES else ""
 
 
 def build_thumbnail_url(image_url, width=256):
@@ -273,6 +317,51 @@ def extract_size_fields(meta, item):
     return "", width_text, height_text
 
 
+def get_item_dimensions(item):
+    width = safe_int(item.get("width"), safe_int(item.get("width_text"), 0))
+    height = safe_int(item.get("height"), safe_int(item.get("height_text"), 0))
+    return width, height
+
+
+def item_matches_aspect_ratio(item, wanted_aspect_ratio):
+    wanted = normalize_aspect_ratio(wanted_aspect_ratio)
+    if not wanted:
+        return True
+
+    width, height = get_item_dimensions(item)
+    if width <= 0 or height <= 0:
+        return False
+
+    if wanted == "PORTRAIT":
+        return height > width * (1 + SQUARE_RATIO_TOLERANCE)
+    if wanted == "LANDSCAPE":
+        return width > height * (1 + SQUARE_RATIO_TOLERANCE)
+    if wanted == "SQUARE":
+        return abs((width / height) - 1.0) <= SQUARE_RATIO_TOLERANCE
+
+    ratio_parts = wanted.split(":")
+    if len(ratio_parts) != 2:
+        return True
+
+    try:
+        target_ratio = float(ratio_parts[0]) / float(ratio_parts[1])
+    except (TypeError, ValueError, ZeroDivisionError):
+        return True
+    actual_ratio = width / height
+    return abs(actual_ratio - target_ratio) <= EXACT_RATIO_TOLERANCE
+
+
+def item_matches_min_resolution(item, wanted_min_resolution):
+    wanted = normalize_min_resolution(wanted_min_resolution)
+    if not wanted:
+        return True
+
+    width, height = get_item_dimensions(item)
+    if width <= 0 or height <= 0:
+        return False
+    return max(width, height) >= int(wanted)
+
+
 def normalize_civitai_item(item, thumbnail_width=192):
     meta = item.get("meta") or {}
     prompt = meta.get("prompt") or ""
@@ -323,6 +412,63 @@ def normalize_civitai_payload(payload, thumbnail_width=192):
     }
 
 
+def pick_model_search_version(item):
+    versions = item.get("modelVersions") or []
+    for version in versions:
+        if (version.get("images") or []) and version.get("id") is not None:
+            return version
+    for version in versions:
+        if version.get("id") is not None:
+            return version
+    return {}
+
+
+def normalize_civitai_model_search_item(item, thumbnail_width=192):
+    model_id = item.get("id")
+    name = str(item.get("name") or "").strip()
+    if model_id is None or not name:
+        return None
+
+    version = pick_model_search_version(item)
+    version_id = str(version.get("id") or "").strip()
+    version_name = str(version.get("name") or "").strip()
+    base_model = normalize_base_model(version.get("baseModel"))
+    images = version.get("images") or []
+    thumbnail_url = ""
+    for image in images:
+        url = str((image or {}).get("url") or "").strip()
+        if url:
+            thumbnail_url = build_thumbnail_url(url, width=thumbnail_width)
+            break
+
+    label_parts = [name]
+    if version_name:
+        label_parts.append(version_name)
+    if base_model:
+        label_parts.append(base_model)
+    if version_id:
+        label_parts.append(f"VID:{version_id}")
+
+    return {
+        "id": str(model_id),
+        "name": name,
+        "label": " · ".join(label_parts),
+        "model_version_id": version_id,
+        "model_version_name": version_name,
+        "base_model": base_model,
+        "thumbnail_url": thumbnail_url,
+    }
+
+
+def normalize_civitai_model_search_payload(payload, thumbnail_width=192):
+    items = []
+    for item in payload.get("items", []):
+        normalized = normalize_civitai_model_search_item(item, thumbnail_width=thumbnail_width)
+        if normalized:
+            items.append(normalized)
+    return {"items": items}
+
+
 def parse_filters(query):
     period = str(query.get("period", "")).strip()
     if period not in ALLOWED_PERIODS:
@@ -335,6 +481,9 @@ def parse_filters(query):
     nsfw = normalize_nsfw(query.get("nsfw", ""))
     sort = normalize_sort(query.get("sort", ""))
     tags = normalize_tag_filters(query.get("tags", ""))
+    block_tags = normalize_tag_filters(query.get("block_tags", ""))
+    aspect_ratio = normalize_aspect_ratio(query.get("aspect_ratio", ""))
+    min_resolution = normalize_min_resolution(query.get("min_resolution", ""))
 
     return {
         "period": period,
@@ -345,6 +494,9 @@ def parse_filters(query):
         "nsfw": nsfw,
         "sort": sort,
         "tags": tags,
+        "block_tags": block_tags,
+        "aspect_ratio": aspect_ratio,
+        "min_resolution": min_resolution,
     }
 
 
@@ -378,6 +530,9 @@ def apply_local_filters(items, filters):
     wanted_model_version_id = filters.get("model_version_id")
     wanted_nsfw = filters.get("nsfw")
     wanted_tags = normalize_tag_filters(filters.get("tags", []))
+    blocked_tags = normalize_tag_filters(filters.get("block_tags", []))
+    wanted_aspect_ratio = normalize_aspect_ratio(filters.get("aspect_ratio", ""))
+    wanted_min_resolution = normalize_min_resolution(filters.get("min_resolution", ""))
 
     for item in items:
         if filters.get("metadata_only") and not item.get("has_metadata"):
@@ -394,7 +549,13 @@ def apply_local_filters(items, filters):
             str(value) for value in item.get("model_version_ids", [])
         }:
             continue
+        if wanted_aspect_ratio and not item_matches_aspect_ratio(item, wanted_aspect_ratio):
+            continue
+        if wanted_min_resolution and not item_matches_min_resolution(item, wanted_min_resolution):
+            continue
         if wanted_tags and not all(item_matches_tag_filter(item, selected_tag) for selected_tag in wanted_tags):
+            continue
+        if blocked_tags and any(item_matches_tag_filter(item, selected_tag) for selected_tag in blocked_tags):
             continue
         filtered.append(item)
     return filtered
@@ -414,7 +575,15 @@ def build_diagnostics(upstream_items, filtered_items, next_page, filters):
                 empty_reason = "no_public_model_version_images"
             elif filters.get("model_id"):
                 empty_reason = "no_public_model_images"
-            elif filters.get("base_model") or filters.get("period") or filters.get("nsfw") or filters.get("tags"):
+            elif (
+                filters.get("base_model")
+                or filters.get("period")
+                or filters.get("nsfw")
+                or filters.get("tags")
+                or filters.get("block_tags")
+                or filters.get("aspect_ratio")
+                or filters.get("min_resolution")
+            ):
                 empty_reason = "no_images_for_filters"
             else:
                 empty_reason = "no_images_returned"
@@ -533,6 +702,14 @@ def build_request_url(limit, next_page, filters):
     return f"{CIVITAI_IMAGES_URL}?{urlencode(params)}"
 
 
+def build_models_request_url(query, limit):
+    params = {
+        "limit": str(max(1, int(limit))),
+        "query": str(query or "").strip(),
+    }
+    return f"{CIVITAI_MODELS_URL}?{urlencode(params)}"
+
+
 async def fetch_civitai_images(limit=12, next_page="", filters=None):
     filters = filters or {}
     if not is_allowed_next_page(next_page):
@@ -576,6 +753,20 @@ async def fetch_civitai_images(limit=12, next_page="", filters=None):
     }
 
 
+async def fetch_civitai_models(query, limit=8, filters=None):
+    query = str(query or "").strip()
+    if not query:
+        return {"items": []}
+
+    filters = filters or {}
+    async with ClientSession(
+        timeout=DEFAULT_TIMEOUT,
+        headers=build_request_headers(filters),
+    ) as session:
+        payload = await fetch_json(build_models_request_url(query, limit), session)
+    return normalize_civitai_model_search_payload(payload)
+
+
 async def _handle_civitai_images(request, fetcher):
     next_page = request.rel_url.query.get("next_page", "")
     if not is_allowed_next_page(next_page):
@@ -603,10 +794,39 @@ async def _handle_civitai_images(request, fetcher):
         return web.json_response({"error": describe_error(error)}, status=502)
 
 
-def add_prompt_picker_routes(routes, fetcher=fetch_civitai_images):
+async def _handle_civitai_models(request, model_fetcher):
+    query = request.rel_url.query.get("query", "").strip()
+    limit = request.rel_url.query.get("limit", "8")
+    try:
+        limit = max(1, min(20, int(limit)))
+    except ValueError:
+        limit = 8
+
+    filters = {
+        "api_key": request.headers.get("X-Civitai-Api-Key", "").strip(),
+    }
+
+    try:
+        payload = await model_fetcher(query=query, limit=limit, filters=filters)
+        return web.json_response(payload)
+    except ValueError as error:
+        return web.json_response({"error": describe_error(error)}, status=400)
+    except PermissionError as error:
+        return web.json_response({"error": describe_error(error)}, status=403)
+    except TimeoutError as error:
+        return web.json_response({"error": describe_error(error)}, status=504)
+    except Exception as error:
+        return web.json_response({"error": describe_error(error)}, status=502)
+
+
+def add_prompt_picker_routes(routes, fetcher=fetch_civitai_images, model_fetcher=fetch_civitai_models):
     @routes.get("/civitai-prompt-picker/images")
     async def get_civitai_images(request):
         return await _handle_civitai_images(request, fetcher)
+
+    @routes.get("/civitai-prompt-picker/models")
+    async def get_civitai_models(request):
+        return await _handle_civitai_models(request, model_fetcher)
 
     return get_civitai_images
 

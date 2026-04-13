@@ -7,12 +7,21 @@ const STRINGS = {
         pastYear: "一年内",
         allVisibilityLevels: "全部可见级别",
         safeOnly: "仅安全内容",
-        anyNsfw: "任意 NSFW",
+        anyNsfw: "仅 NSFW",
         softOnly: "仅 Soft",
         matureOnly: "仅 Mature",
         xOnly: "仅 X",
         defaultSort: "默认排序",
         allBaseModels: "全部基础模型",
+        allRatios: "全部比例",
+        portraitOnly: "竖图",
+        landscapeOnly: "横图",
+        squareOnly: "方图",
+        allSizes: "全部尺寸",
+        longEdge1024: "长边 >= 1024",
+        longEdge1536: "长边 >= 1536",
+        longEdge2048: "长边 >= 2048",
+        longEdge3072: "长边 >= 3072",
         customInput: "自定义输入...",
         noMetadataAvailable: "有图片，但都没有可用 prompt metadata。关闭 metadata only 会看到更多。",
         noPublicModelVersionImages:
@@ -25,7 +34,7 @@ const STRINGS = {
         filteredOutByCombination:
             "接口里有图片，但被当前筛选组合压空了。先放宽 metadata only、时间段或基础模型会更容易命中。",
         noImagesReturned: "Civitai 当前没有返回可显示图片。",
-        baseModelPlaceholder: "输入未出现在下拉中的基础模型名",
+        baseModelPlaceholder: "输入基础模型名，或输入模型名并从建议中选择",
         baseModelLabel: "基础模型",
         modelIdPlaceholder: "例如 257749",
         modelVersionIdPlaceholder: "例如 290640",
@@ -34,7 +43,10 @@ const STRINGS = {
         periodLabel: "时间段",
         sortLabel: "排序",
         nsfwLabel: "NSFW",
+        aspectRatioLabel: "图片比例",
+        resolutionLabel: "最小分辨率",
         tagsLabel: "标签",
+        blockTagsLabel: "屏蔽标签",
         modelIdLabel: "模型 ID",
         modelVersionIdLabel: "模型版本 ID",
         apiKeyLabel: "Civitai API Key",
@@ -69,6 +81,8 @@ const STRINGS = {
         hasNegativePrompt: "带负面 prompt",
         noNegativePrompt: "无负面 prompt",
         selectedImageStatus: "已选择图片 #{id}{sizeSegment} · {negativeStatus}",
+        modelSearchResolved: "已自动锁定模型版本 {modelVersionId}，正在重新抓图...",
+        modelSearchChooseCandidate: "找到 {count} 个相关模型，请在建议里选一个具体模型版本。",
     },
     en: {
         allTime: "All time",
@@ -78,12 +92,21 @@ const STRINGS = {
         pastYear: "Past year",
         allVisibilityLevels: "All visibility levels",
         safeOnly: "Safe only",
-        anyNsfw: "Any NSFW",
+        anyNsfw: "NSFW only",
         softOnly: "Soft only",
         matureOnly: "Mature only",
         xOnly: "X only",
         defaultSort: "Default sort",
         allBaseModels: "All base models",
+        allRatios: "All ratios",
+        portraitOnly: "Portrait only",
+        landscapeOnly: "Landscape only",
+        squareOnly: "Square only",
+        allSizes: "All sizes",
+        longEdge1024: "Long edge >= 1024",
+        longEdge1536: "Long edge >= 1536",
+        longEdge2048: "Long edge >= 2048",
+        longEdge3072: "Long edge >= 3072",
         customInput: "Custom input...",
         noMetadataAvailable: "Images exist, but none contain usable prompt metadata. Disable metadata only to see more.",
         noPublicModelVersionImages:
@@ -96,7 +119,7 @@ const STRINGS = {
         filteredOutByCombination:
             "The API returned images, but the current filter combination removed them all. Relax metadata only, time range, or base model to get more hits.",
         noImagesReturned: "Civitai returned no displayable images right now.",
-        baseModelPlaceholder: "Enter a base model name not shown in the dropdown",
+        baseModelPlaceholder: "Enter a base model name, or type a model name and pick a suggestion",
         baseModelLabel: "Base model",
         modelIdPlaceholder: "Example: 257749",
         modelVersionIdPlaceholder: "Example: 290640",
@@ -105,7 +128,10 @@ const STRINGS = {
         periodLabel: "Time range",
         sortLabel: "Sort",
         nsfwLabel: "NSFW",
+        aspectRatioLabel: "Aspect ratio",
+        resolutionLabel: "Min resolution",
         tagsLabel: "Tags",
+        blockTagsLabel: "Blocked tags",
         modelIdLabel: "Model ID",
         modelVersionIdLabel: "Model version ID",
         apiKeyLabel: "Civitai API Key",
@@ -140,6 +166,8 @@ const STRINGS = {
         hasNegativePrompt: "Has negative prompt",
         noNegativePrompt: "No negative prompt",
         selectedImageStatus: "Selected image #{id}{sizeSegment} · {negativeStatus}",
+        modelSearchResolved: "Auto-selected model version {modelVersionId}. Reloading images...",
+        modelSearchChooseCandidate: "Found {count} related models. Pick a specific model version from the suggestions.",
     },
 };
 
@@ -204,4 +232,32 @@ export function buildBaseModelOptions(values, language, customValue) {
     }
     options.push({ value: customValue, label: translate(language, "customInput") });
     return options;
+}
+
+
+export function buildAspectRatioOptions(language) {
+    return [
+        { value: "", label: translate(language, "allRatios") },
+        { value: "PORTRAIT", label: translate(language, "portraitOnly") },
+        { value: "LANDSCAPE", label: translate(language, "landscapeOnly") },
+        { value: "SQUARE", label: translate(language, "squareOnly") },
+        { value: "9:16", label: "9:16" },
+        { value: "3:4", label: "3:4" },
+        { value: "2:3", label: "2:3" },
+        { value: "1:1", label: "1:1" },
+        { value: "3:2", label: "3:2" },
+        { value: "4:3", label: "4:3" },
+        { value: "16:9", label: "16:9" },
+    ];
+}
+
+
+export function buildResolutionOptions(language) {
+    return [
+        { value: "", label: translate(language, "allSizes") },
+        { value: "1024", label: translate(language, "longEdge1024") },
+        { value: "1536", label: translate(language, "longEdge1536") },
+        { value: "2048", label: translate(language, "longEdge2048") },
+        { value: "3072", label: translate(language, "longEdge3072") },
+    ];
 }

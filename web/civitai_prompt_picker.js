@@ -1,5 +1,20 @@
 import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
+import {
+    buildBaseModelOptions,
+    buildNsfwOptions,
+    buildPeriodOptions,
+    buildSortOptions,
+    resolveUiLanguage,
+    translate,
+} from "./civitai_prompt_picker_i18n.js";
+import {
+    hasFavorite,
+    parseFavorites,
+    removeFavorite,
+    serializeFavorites,
+    upsertFavorite,
+} from "./civitai_prompt_picker_favorites.js";
 import { shouldDeferPrefillAfterFirstBatch, shouldPrefillMore } from "./civitai_prompt_picker_prefill.js";
 
 
@@ -18,31 +33,9 @@ const FILTER_INPUT_DEBOUNCE_MS = 350;
 const BASE_MODEL_CUSTOM_VALUE = "__custom__";
 const STORAGE_KEYS = {
     apiKey: "comfy.civitaiPromptPicker.apiKey",
+    favorites: "comfy.civitaiPromptPicker.favorites",
     nsfw: "comfy.civitaiPromptPicker.nsfw",
 };
-const PERIOD_OPTIONS = [
-    { value: "", label: "全部时间" },
-    { value: "Day", label: "一天内" },
-    { value: "Week", label: "一周内" },
-    { value: "Month", label: "一月内" },
-    { value: "Year", label: "一年内" },
-];
-const NSFW_OPTIONS = [
-    { value: "", label: "全部可见级别" },
-    { value: "false", label: "仅安全内容" },
-    { value: "true", label: "任意 NSFW" },
-    { value: "Soft", label: "仅 Soft" },
-    { value: "Mature", label: "仅 Mature" },
-    { value: "X", label: "仅 X" },
-];
-const SORT_OPTIONS = [
-    { value: "", label: "默认排序" },
-    { value: "Most Reactions", label: "Most Reactions" },
-    { value: "Most Comments", label: "Most Comments" },
-    { value: "Most Collected", label: "Most Collected" },
-    { value: "Newest", label: "Newest" },
-    { value: "Oldest", label: "Oldest" },
-];
 const OUTPUT_SCHEMA = [
     { name: "prompt", type: "STRING" },
     { name: "negative_prompt", type: "STRING" },
@@ -185,6 +178,8 @@ function ensureStyles() {
             gap: 6px;
             min-width: 0;
             cursor: pointer;
+            position: relative;
+            text-align: left;
             transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
         }
         .civitai-picker-card:hover {
@@ -192,9 +187,16 @@ function ensureStyles() {
             border-color: rgba(118, 200, 255, 0.46);
             box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22);
         }
+        .civitai-picker-card:focus-visible {
+            outline: 1px solid rgba(86, 184, 255, 0.88);
+            outline-offset: 1px;
+        }
         .civitai-picker-card.is-selected {
             border-color: rgba(86, 184, 255, 0.92);
             box-shadow: 0 0 0 1px rgba(86, 184, 255, 0.65);
+        }
+        .civitai-picker-card-media {
+            position: relative;
         }
         .civitai-picker-image {
             display: block;
@@ -203,6 +205,32 @@ function ensureStyles() {
             object-fit: contain;
             border-radius: 8px;
             background: rgba(255, 255, 255, 0.06);
+        }
+        .civitai-picker-favorite {
+            position: absolute;
+            top: 6px;
+            right: 6px;
+            width: 28px;
+            height: 28px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            background: rgba(13, 17, 24, 0.86);
+            color: rgba(255, 255, 255, 0.78);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 15px;
+            line-height: 1;
+            padding: 0;
+        }
+        .civitai-picker-favorite.is-active {
+            color: #ffd45c;
+            border-color: rgba(255, 212, 92, 0.46);
+            background: rgba(52, 41, 0, 0.88);
+        }
+        .civitai-picker-favorite:hover {
+            border-color: rgba(255, 255, 255, 0.32);
         }
         .civitai-picker-card-id,
         .civitai-picker-card-meta {
@@ -304,6 +332,19 @@ function writeStoredValue(key, value) {
     } catch {
         // Ignore storage failures in embedded browsers.
     }
+}
+
+
+function readStoredFavorites() {
+    return parseFavorites(readStoredValue(STORAGE_KEYS.favorites));
+}
+
+
+function writeStoredFavorites(items) {
+    writeStoredValue(
+        STORAGE_KEYS.favorites,
+        Array.isArray(items) && items.length ? serializeFavorites(items) : ""
+    );
 }
 
 
@@ -423,16 +464,6 @@ function makeSelect(options) {
 }
 
 
-function makeBaseModelOptions(values) {
-    const options = [{ value: "", label: "全部基础模型" }];
-    for (const value of values) {
-        options.push({ value, label: value });
-    }
-    options.push({ value: BASE_MODEL_CUSTOM_VALUE, label: "自定义输入..." });
-    return options;
-}
-
-
 function makeField(labelText, inputElement) {
     const field = document.createElement("div");
     field.className = "civitai-picker-field";
@@ -451,25 +482,25 @@ function createEmptyElement(message) {
 }
 
 
-function describeEmptyReason(diagnostics, filters) {
+function describeEmptyReason(t, diagnostics, filters) {
     const reason = diagnostics?.empty_reason || "";
     switch (reason) {
     case "metadata_only_filtered_all":
-        return "有图片，但都没有可用 prompt metadata。关闭 metadata only 会看到更多。";
+        return t("noMetadataAvailable");
     case "no_public_model_version_images":
         return filters.modelVersionId
-            ? `模型版本 ${filters.modelVersionId} 在 Civitai 图片接口里没有公开图库图，或这些图需要登录/API Key/NSFW 可见权限。`
-            : "当前模型版本没有公开图库图。";
+            ? t("noPublicModelVersionImages", { modelVersionId: filters.modelVersionId })
+            : t("noCurrentModelVersionImages");
     case "no_public_model_images":
         return filters.modelId
-            ? `模型 ${filters.modelId} 在 Civitai 图片接口里没有公开图库图，或这些图需要登录/API Key/NSFW 可见权限。`
-            : "当前模型没有公开图库图。";
+            ? t("noPublicModelImages", { modelId: filters.modelId })
+            : t("noCurrentModelImages");
     case "no_images_for_filters":
-        return "当前时间段、基础模型或 NSFW 筛选下没有公开图片。";
+        return t("noImagesForFilters");
     case "filtered_out_by_combination":
-        return "接口里有图片，但被当前筛选组合压空了。先放宽 metadata only、时间段或基础模型会更容易命中。";
+        return t("filteredOutByCombination");
     case "no_images_returned":
-        return "Civitai 当前没有返回可显示图片。";
+        return t("noImagesReturned");
     default:
         return "";
     }
@@ -480,13 +511,17 @@ class CivitaiPromptPickerUI {
     constructor(node, element) {
         this.node = node;
         this.element = element;
+        this.language = resolveUiLanguage(window.navigator?.language || window.navigator?.languages?.[0]);
+        this.t = (key, params) => translate(this.language, key, params);
         this.layout = computeLayoutMetrics(node.size);
         this.state = {
             items: [],
+            favorites: readStoredFavorites(),
             loading: false,
             selectedId: "",
             nextPage: "",
             hasMore: true,
+            viewMode: "feed",
             filters: {
                 period: "",
                 baseModel: "",
@@ -503,6 +538,7 @@ class CivitaiPromptPickerUI {
         this.pendingReset = false;
         this.deferredPrefillRequested = false;
         this.cardElements = new Map();
+        this.favoriteElements = new Map();
         this.lastSelectedCard = null;
         this.lastDiagnostics = null;
         this.baseModelValues = new Set(BASE_MODEL_SUGGESTIONS);
@@ -516,6 +552,7 @@ class CivitaiPromptPickerUI {
         this.limitWidget = findWidget(node, "limit");
 
         this.renderShell();
+        this.rememberBaseModels(this.state.favorites);
         this.syncFromWidgets();
         this.attachWidgetCallbacks();
         this.syncLayout();
@@ -532,35 +569,37 @@ class CivitaiPromptPickerUI {
         this.root = document.createElement("div");
         this.root.className = "civitai-picker";
 
-        this.periodSelect = makeSelect(PERIOD_OPTIONS);
-        this.sortSelect = makeSelect(SORT_OPTIONS);
-        this.nsfwSelect = makeSelect(NSFW_OPTIONS);
+        this.periodSelect = makeSelect(buildPeriodOptions(this.language));
+        this.sortSelect = makeSelect(buildSortOptions(this.language));
+        this.nsfwSelect = makeSelect(buildNsfwOptions(this.language));
         this.nsfwSelect.value = readStoredValue(STORAGE_KEYS.nsfw);
 
-        this.baseModelSelect = makeSelect(makeBaseModelOptions(BASE_MODEL_SUGGESTIONS));
+        this.baseModelSelect = makeSelect(
+            buildBaseModelOptions(BASE_MODEL_SUGGESTIONS, this.language, BASE_MODEL_CUSTOM_VALUE)
+        );
         this.baseModelInput = document.createElement("input");
         this.baseModelInput.className = "civitai-picker-input";
-        this.baseModelInput.placeholder = "输入未出现在下拉中的基础模型名";
+        this.baseModelInput.placeholder = this.t("baseModelPlaceholder");
         this.baseModelInput.hidden = true;
 
         const baseModelField = document.createElement("div");
         baseModelField.className = "civitai-picker-field";
         const baseModelLabel = document.createElement("label");
-        baseModelLabel.textContent = "基础模型";
+        baseModelLabel.textContent = this.t("baseModelLabel");
         baseModelField.append(baseModelLabel, this.baseModelSelect, this.baseModelInput);
 
         this.modelIdInput = document.createElement("input");
         this.modelIdInput.className = "civitai-picker-input";
-        this.modelIdInput.placeholder = "例如 257749";
+        this.modelIdInput.placeholder = this.t("modelIdPlaceholder");
 
         this.modelVersionIdInput = document.createElement("input");
         this.modelVersionIdInput.className = "civitai-picker-input";
-        this.modelVersionIdInput.placeholder = "例如 290640";
+        this.modelVersionIdInput.placeholder = this.t("modelVersionIdPlaceholder");
 
         this.apiKeyInput = document.createElement("input");
         this.apiKeyInput.type = "password";
         this.apiKeyInput.className = "civitai-picker-input";
-        this.apiKeyInput.placeholder = "可选，用于登录可见图片或 NSFW 内容";
+        this.apiKeyInput.placeholder = this.t("apiKeyPlaceholder");
         this.apiKeyInput.value = readStoredValue(STORAGE_KEYS.apiKey);
 
         this.metadataOnlyInput = document.createElement("input");
@@ -571,19 +610,19 @@ class CivitaiPromptPickerUI {
         toggleWrap.className = "civitai-picker-toggle";
         toggleWrap.append(
             this.metadataOnlyInput,
-            document.createTextNode("仅显示带 metadata/prompt 的图片"),
+            document.createTextNode(this.t("metadataOnlyToggle")),
         );
 
         const toolbar = document.createElement("div");
         toolbar.className = "civitai-picker-toolbar";
         toolbar.append(
-            makeField("时间段", this.periodSelect),
-            makeField("排序", this.sortSelect),
-            makeField("NSFW", this.nsfwSelect),
+            makeField(this.t("periodLabel"), this.periodSelect),
+            makeField(this.t("sortLabel"), this.sortSelect),
+            makeField(this.t("nsfwLabel"), this.nsfwSelect),
             baseModelField,
-            makeField("模型 ID", this.modelIdInput),
-            makeField("模型版本 ID", this.modelVersionIdInput),
-            makeField("Civitai API Key", this.apiKeyInput),
+            makeField(this.t("modelIdLabel"), this.modelIdInput),
+            makeField(this.t("modelVersionIdLabel"), this.modelVersionIdInput),
+            makeField(this.t("apiKeyLabel"), this.apiKeyInput),
             toggleWrap,
         );
 
@@ -592,15 +631,20 @@ class CivitaiPromptPickerUI {
 
         this.statusEl = document.createElement("div");
         this.statusEl.className = "civitai-picker-status";
-        this.statusEl.textContent = "准备加载 Civitai 缩略图...";
+        this.statusEl.textContent = this.t("readyStatus");
 
         this.refreshButton = document.createElement("button");
         this.refreshButton.type = "button";
         this.refreshButton.className = "civitai-picker-button";
-        this.refreshButton.textContent = "应用筛选";
+        this.refreshButton.textContent = this.t("applyFilters");
         this.refreshButton.addEventListener("click", () => this.loadImages(true));
 
-        actions.append(this.statusEl, this.refreshButton);
+        this.favoritesButton = document.createElement("button");
+        this.favoritesButton.type = "button";
+        this.favoritesButton.className = "civitai-picker-button";
+        this.favoritesButton.addEventListener("click", () => this.toggleViewMode());
+
+        actions.append(this.statusEl, this.refreshButton, this.favoritesButton);
 
         this.gridEl = document.createElement("div");
         this.gridEl.className = "civitai-picker-grid";
@@ -608,17 +652,17 @@ class CivitaiPromptPickerUI {
 
         this.loaderEl = document.createElement("div");
         this.loaderEl.className = "civitai-picker-loader";
-        this.loaderEl.textContent = "正在加载更多图片...";
+        this.loaderEl.textContent = this.t("loadingMore");
         this.loaderEl.hidden = true;
 
         const previewLabel = document.createElement("div");
         previewLabel.className = "civitai-picker-preview-label";
-        previewLabel.textContent = "选中图片的 Prompt";
+        previewLabel.textContent = this.t("previewLabel");
 
         this.previewEl = document.createElement("textarea");
         this.previewEl.className = "civitai-picker-preview";
         this.previewEl.readOnly = true;
-        this.previewEl.placeholder = "点击上面的图片后，这里会出现 prompt。";
+        this.previewEl.placeholder = this.t("previewPlaceholder");
 
         this.root.append(
             toolbar,
@@ -630,6 +674,7 @@ class CivitaiPromptPickerUI {
         );
         this.element.appendChild(this.root);
         this.syncBaseModelControls();
+        this.syncViewModeUi();
         this.renderState();
     }
 
@@ -682,6 +727,10 @@ class CivitaiPromptPickerUI {
     }
 
     requestReload({ immediate = false } = {}) {
+        if (this.isFavoritesView()) {
+            return;
+        }
+
         if (this.reloadTimer) {
             window.clearTimeout(this.reloadTimer);
             this.reloadTimer = null;
@@ -724,7 +773,11 @@ class CivitaiPromptPickerUI {
             .sort((left, right) => left.localeCompare(right));
         const currentValue = this.baseModelSelect?.value || "";
         const customValue = this.baseModelInput?.value || "";
-        const options = makeBaseModelOptions([...BASE_MODEL_SUGGESTIONS, ...extras]);
+        const options = buildBaseModelOptions(
+            [...BASE_MODEL_SUGGESTIONS, ...extras],
+            this.language,
+            BASE_MODEL_CUSTOM_VALUE
+        );
         const rebuiltSelect = makeSelect(options);
         rebuiltSelect.addEventListener("change", () => {
             this.syncBaseModelControls();
@@ -783,6 +836,114 @@ class CivitaiPromptPickerUI {
         };
     }
 
+    isFavoritesView() {
+        return this.state.viewMode === "favorites";
+    }
+
+    getVisibleItems() {
+        return this.isFavoritesView() ? this.state.favorites : this.state.items;
+    }
+
+    updateFavoritesButtonLabel() {
+        if (!this.favoritesButton) {
+            return;
+        }
+        this.favoritesButton.textContent = this.isFavoritesView()
+            ? this.t("browseButton")
+            : this.t("favoritesButton", { count: this.state.favorites.length });
+    }
+
+    syncViewModeUi() {
+        const disabled = this.isFavoritesView();
+        this.refreshButton.hidden = disabled;
+        for (const control of [
+            this.periodSelect,
+            this.sortSelect,
+            this.nsfwSelect,
+            this.baseModelSelect,
+            this.baseModelInput,
+            this.modelIdInput,
+            this.modelVersionIdInput,
+            this.apiKeyInput,
+            this.metadataOnlyInput,
+        ]) {
+            if (control) {
+                control.disabled = disabled;
+            }
+        }
+        this.updateFavoritesButtonLabel();
+        this.loaderEl.hidden = disabled || !(this.loadingMore && this.state.items.length > 0);
+    }
+
+    restoreFeedStatus() {
+        if (this.state.loading) {
+            this.setStatus(this.t("loadingByFilters"));
+            return;
+        }
+        if (!this.state.items.length) {
+            this.setStatus(this.t("readyStatus"));
+            return;
+        }
+        if (!this.state.hasMore) {
+            this.setStatus(this.t("loadedBottom", { count: this.state.items.length }));
+            return;
+        }
+        this.setStatus(this.t("loadedMore", { count: this.state.items.length }));
+    }
+
+    toggleViewMode() {
+        this.state.viewMode = this.isFavoritesView() ? "feed" : "favorites";
+        this.clearGrid();
+        this.syncViewModeUi();
+        this.renderState();
+        if (this.isFavoritesView()) {
+            const count = this.state.favorites.length;
+            this.setStatus(count ? this.t("favoritesStatus", { count }) : this.t("favoritesEmpty"));
+            return;
+        }
+        this.restoreFeedStatus();
+    }
+
+    persistFavorites() {
+        writeStoredFavorites(this.state.favorites);
+        this.updateFavoritesButtonLabel();
+    }
+
+    updateFavoriteButtonState(imageId) {
+        const key = String(imageId || "");
+        const button = this.favoriteElements.get(key);
+        if (!button) {
+            return;
+        }
+        const active = hasFavorite(this.state.favorites, key);
+        button.classList.toggle("is-active", active);
+        button.textContent = active ? "★" : "☆";
+        button.title = active ? this.t("favoriteRemove") : this.t("favoriteAdd");
+        button.setAttribute("aria-label", button.title);
+    }
+
+    toggleFavorite(item) {
+        const imageId = String(item?.id || "");
+        if (!imageId) {
+            return;
+        }
+
+        const active = hasFavorite(this.state.favorites, imageId);
+        this.state.favorites = active
+            ? removeFavorite(this.state.favorites, imageId)
+            : upsertFavorite(this.state.favorites, item);
+        this.persistFavorites();
+
+        if (this.isFavoritesView()) {
+            this.clearGrid();
+            this.renderState();
+        } else {
+            this.updateFavoriteButtonState(imageId);
+            this.setStatus(this.t(active ? "favoriteRemoved" : "favoriteSaved", { id: imageId }));
+        }
+        this.markDirty();
+    }
+
     setStatus(message) {
         this.statusEl.textContent = message;
     }
@@ -823,6 +984,7 @@ class CivitaiPromptPickerUI {
 
     clearGrid() {
         this.cardElements.clear();
+        this.favoriteElements.clear();
         this.lastSelectedCard = null;
         this.gridEl.replaceChildren();
     }
@@ -833,10 +995,11 @@ class CivitaiPromptPickerUI {
     }
 
     createCard(item) {
-        const card = document.createElement("button");
-        card.type = "button";
+        const card = document.createElement("div");
         card.className = "civitai-picker-card";
         card.dataset.itemId = String(item.id);
+        card.tabIndex = 0;
+        card.setAttribute("role", "button");
 
         const image = document.createElement("img");
         image.className = "civitai-picker-image";
@@ -851,6 +1014,18 @@ class CivitaiPromptPickerUI {
         const height = Math.max(1, Number(item.height || 0) || 1);
         image.width = width;
         image.height = height;
+
+        const media = document.createElement("div");
+        media.className = "civitai-picker-card-media";
+        const favoriteButton = document.createElement("button");
+        favoriteButton.type = "button";
+        favoriteButton.className = "civitai-picker-favorite";
+        favoriteButton.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            this.toggleFavorite(item);
+        });
+        media.append(image, favoriteButton);
 
         const metaId = document.createElement("div");
         metaId.className = "civitai-picker-card-id";
@@ -876,8 +1051,16 @@ class CivitaiPromptPickerUI {
         }
         metaInfo.textContent = markers.join(" · ");
 
-        card.append(image, metaId, metaInfo);
+        card.append(media, metaId, metaInfo);
         card.addEventListener("click", () => this.selectItem(item));
+        card.addEventListener("keydown", (event) => {
+            if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                this.selectItem(item);
+            }
+        });
+        this.favoriteElements.set(String(item.id), favoriteButton);
+        this.updateFavoriteButtonState(item.id);
         return card;
     }
 
@@ -921,15 +1104,31 @@ class CivitaiPromptPickerUI {
     renderState() {
         this.previewEl.value = String(this.promptWidget?.value || this.previewEl.value || "");
         this.refreshButton.disabled = this.state.loading;
-        this.loaderEl.hidden = !(this.loadingMore && this.state.items.length > 0);
+        this.syncViewModeUi();
+
+        if (this.isFavoritesView()) {
+            const favorites = this.getVisibleItems();
+            if (!favorites.length) {
+                this.renderEmptyState(this.t("favoritesEmpty"));
+                this.setStatus(this.t("favoritesEmpty"));
+                return;
+            }
+            if (!this.cardElements.size) {
+                this.appendItems(favorites);
+            } else {
+                this.updateSelectionState();
+            }
+            this.setStatus(this.t("favoritesStatus", { count: favorites.length }));
+            return;
+        }
 
         if (this.state.loading && !this.state.items.length) {
-            this.renderEmptyState("正在加载缩略图...");
+            this.renderEmptyState(this.t("loadingThumbnails"));
             return;
         }
 
         if (!this.state.items.length) {
-            this.renderEmptyState("当前没有可显示的图片。");
+            this.renderEmptyState(this.t("noVisibleImages"));
             return;
         }
 
@@ -941,6 +1140,10 @@ class CivitaiPromptPickerUI {
     }
 
     async loadImages(reset) {
+        if (this.isFavoritesView()) {
+            return;
+        }
+
         if (this.state.loading) {
             if (reset) {
                 this.pendingReset = true;
@@ -977,7 +1180,7 @@ class CivitaiPromptPickerUI {
         this.state.loading = true;
         this.loadingMore = !reset;
         this.renderState();
-        this.setStatus(reset ? "正在按筛选条件加载缩略图..." : "正在加载更多缩略图...");
+        this.setStatus(reset ? this.t("loadingByFilters") : this.t("loadingMoreStatus"));
 
         try {
             while (true) {
@@ -1026,11 +1229,11 @@ class CivitaiPromptPickerUI {
                 if (!uniqueIncoming.length && this.state.hasMore) {
                     traversedEmptyPages += 1;
                     if (traversedEmptyPages >= emptyPageChainLimit) {
-                        this.setStatus("连续空页过多，先停在这里。继续滚动可再向后抓取。");
+                        this.setStatus(this.t("tooManyEmptyPages"));
                         break;
                     }
                     nextPage = this.state.nextPage;
-                    this.setStatus(`当前页没有命中结果，继续向后抓取第 ${traversedEmptyPages + 1} 页...`);
+                    this.setStatus(this.t("emptyPageContinue", { page: traversedEmptyPages + 1 }));
                     continue;
                 }
 
@@ -1046,7 +1249,7 @@ class CivitaiPromptPickerUI {
 
                 if (uniqueIncoming.length && this.state.hasMore && this.needsViewportPrefill()) {
                     nextPage = this.state.nextPage;
-                    this.setStatus("当前可视区域还没填满，继续自动抓取下一页...");
+                    this.setStatus(this.t("continuePrefill"));
                     continue;
                 }
 
@@ -1054,26 +1257,26 @@ class CivitaiPromptPickerUI {
             }
 
             if (!this.state.items.length) {
-                this.renderEmptyState("当前没有可显示的图片。");
-                const reasonMessage = describeEmptyReason(this.lastDiagnostics, filters);
+                this.renderEmptyState(this.t("noVisibleImages"));
+                const reasonMessage = describeEmptyReason(this.t, this.lastDiagnostics, filters);
                 if (this.state.hasMore) {
                     this.setStatus(
                         reasonMessage
-                            ? `${reasonMessage} 当前还可以继续向后抓取更多页。`
-                            : "暂时还没找到命中结果，继续滚动会再向后抓取。",
+                            ? this.t("hasMoreReason", { reasonMessage })
+                            : this.t("continueScrolling"),
                     );
                 } else {
-                    this.setStatus(reasonMessage || "没有符合筛选条件的图片。");
+                    this.setStatus(reasonMessage || this.t("noMatchingImages"));
                 }
             } else if (!this.state.hasMore) {
-                this.setStatus(`已加载 ${this.state.items.length} 张图片，已经到底了。`);
+                this.setStatus(this.t("loadedBottom", { count: this.state.items.length }));
             } else if (appendedAny || reset) {
-                this.setStatus(`已加载 ${this.state.items.length} 张图片。继续滚动会自动加载更多。`);
+                this.setStatus(this.t("loadedMore", { count: this.state.items.length }));
             }
         } catch (error) {
-            this.setStatus(`加载失败：${error.message || error}`);
+            this.setStatus(this.t("loadFailed", { error: error.message || error }));
             if (!this.state.items.length) {
-                this.renderEmptyState("加载失败，请稍后重试。");
+                this.renderEmptyState(this.t("loadFailedRetry"));
             }
         } finally {
             this.state.loading = false;
@@ -1083,7 +1286,7 @@ class CivitaiPromptPickerUI {
             this.syncLayout();
             if (this.deferredPrefillRequested && this.state.hasMore && !this.pendingReset) {
                 this.deferredPrefillRequested = false;
-                this.setStatus(`已加载 ${this.state.items.length} 张图片，正在继续补齐首屏...`);
+                this.setStatus(this.t("continuePrefillFirstScreen", { count: this.state.items.length }));
                 requestAnimationFrame(() => this.loadImages(false));
             }
             if (this.pendingReset) {
@@ -1131,8 +1334,14 @@ class CivitaiPromptPickerUI {
 
         this.previewEl.value = item.prompt || "";
         const sizeText = item.size_text || [item.width_text, item.height_text].filter(Boolean).join("x");
-        const negativeStatus = item.negative_prompt ? "带负面 prompt" : "无负面 prompt";
-        this.setStatus(`已选择图片 #${selectedId}${sizeText ? ` · ${sizeText}` : ""} · ${negativeStatus}`);
+        const negativeStatus = item.negative_prompt ? this.t("hasNegativePrompt") : this.t("noNegativePrompt");
+        this.setStatus(
+            this.t("selectedImageStatus", {
+                id: selectedId,
+                sizeSegment: sizeText ? ` · ${sizeText}` : "",
+                negativeStatus,
+            })
+        );
         this.updateSelectionState();
         this.markDirty();
     }

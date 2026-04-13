@@ -22,6 +22,38 @@ git clone https://github.com/Aca233/ComfyUI_CivitaiPromptPicker.git
 
 Then restart ComfyUI.
 
+## Usage
+
+1. Add the `Civitai Prompt Picker` node in ComfyUI.
+2. Browse thumbnails directly inside the node.
+3. Click an image to output:
+   - `prompt`
+   - `negative_prompt`
+   - `width`
+   - `height`
+4. Optional: paste your Civitai API key into the node's `Civitai API Key` field to access more complete results, including account-visible or NSFW content when your account is allowed to see them.
+
+## How to get a Civitai API Key
+
+If you want more complete image results, open your Civitai account page here:
+
+[https://civitai.com/user/account](https://civitai.com/user/account)
+
+Then:
+
+1. Sign in to your Civitai account.
+2. Open the account page above.
+3. Find the API key section on that page.
+4. Create a new API key if you do not already have one.
+5. Copy the key and paste it into the node's `Civitai API Key` input box.
+6. Click `Apply filters` or refresh the node results.
+
+Notes:
+
+- The API key is optional, but it helps when some images are hidden unless you are logged in.
+- NSFW results still depend on your Civitai account permissions and visibility settings.
+- Keep your API key private and do not share it publicly.
+
 ## Node Outputs
 
 - `prompt`

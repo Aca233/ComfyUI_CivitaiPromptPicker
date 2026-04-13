@@ -16,6 +16,14 @@ import {
     upsertFavorite,
 } from "./civitai_prompt_picker_favorites.js";
 import { shouldDeferPrefillAfterFirstBatch, shouldPrefillMore } from "./civitai_prompt_picker_prefill.js";
+import {
+    createViewCacheState,
+    markViewDirty,
+    markViewHydrated,
+    rememberViewScrollTop,
+    shouldHydrateView,
+    switchViewMode,
+} from "./civitai_prompt_picker_view_cache.js";
 
 
 const EXTENSION_NAME = "Comfy.CivitaiPromptPicker";
@@ -537,11 +545,18 @@ class CivitaiPromptPickerUI {
         this.reloadTimer = null;
         this.pendingReset = false;
         this.deferredPrefillRequested = false;
-        this.cardElements = new Map();
+        this.cardElementsByMode = {
+            feed: new Map(),
+            favorites: new Map(),
+        };
         this.favoriteElements = new Map();
-        this.lastSelectedCard = null;
+        this.lastSelectedCardByMode = {
+            feed: null,
+            favorites: null,
+        };
         this.lastDiagnostics = null;
         this.baseModelValues = new Set(BASE_MODEL_SUGGESTIONS);
+        this.viewCacheState = createViewCacheState();
 
         this.promptWidget = findWidget(node, "selected_prompt");
         this.negativePromptWidget = findWidget(node, "selected_negative_prompt");
@@ -646,9 +661,15 @@ class CivitaiPromptPickerUI {
 
         actions.append(this.statusEl, this.refreshButton, this.favoritesButton);
 
-        this.gridEl = document.createElement("div");
-        this.gridEl.className = "civitai-picker-grid";
-        this.gridEl.addEventListener("scroll", () => this.onGridScroll());
+        this.feedGridEl = document.createElement("div");
+        this.feedGridEl.className = "civitai-picker-grid";
+        this.feedGridEl.addEventListener("scroll", () => this.onGridScroll());
+
+        this.favoritesGridEl = document.createElement("div");
+        this.favoritesGridEl.className = "civitai-picker-grid";
+        this.favoritesGridEl.hidden = true;
+
+        this.gridEl = this.feedGridEl;
 
         this.loaderEl = document.createElement("div");
         this.loaderEl.className = "civitai-picker-loader";
@@ -667,7 +688,8 @@ class CivitaiPromptPickerUI {
         this.root.append(
             toolbar,
             actions,
-            this.gridEl,
+            this.feedGridEl,
+            this.favoritesGridEl,
             this.loaderEl,
             previewLabel,
             this.previewEl,
@@ -844,6 +866,16 @@ class CivitaiPromptPickerUI {
         return this.isFavoritesView() ? this.state.favorites : this.state.items;
     }
 
+    getGridForView(viewMode = this.state.viewMode) {
+        return viewMode === "favorites" ? this.favoritesGridEl : this.feedGridEl;
+    }
+
+    getCardMapForView(viewMode = this.state.viewMode) {
+        return viewMode === "favorites"
+            ? this.cardElementsByMode.favorites
+            : this.cardElementsByMode.feed;
+    }
+
     updateFavoritesButtonLabel() {
         if (!this.favoritesButton) {
             return;
@@ -856,6 +888,8 @@ class CivitaiPromptPickerUI {
     syncViewModeUi() {
         const disabled = this.isFavoritesView();
         this.refreshButton.hidden = disabled;
+        this.feedGridEl.hidden = disabled;
+        this.favoritesGridEl.hidden = !disabled;
         for (const control of [
             this.periodSelect,
             this.sortSelect,
@@ -892,10 +926,22 @@ class CivitaiPromptPickerUI {
     }
 
     toggleViewMode() {
-        this.state.viewMode = this.isFavoritesView() ? "feed" : "favorites";
-        this.clearGrid();
+        const currentMode = this.state.viewMode;
+        const currentGrid = this.getGridForView(currentMode);
+        switchViewMode(
+            this.viewCacheState,
+            this.isFavoritesView() ? "feed" : "favorites",
+            Number(currentGrid?.scrollTop || 0)
+        );
+        this.state.viewMode = this.viewCacheState.currentMode;
         this.syncViewModeUi();
         this.renderState();
+        requestAnimationFrame(() => {
+            const nextGrid = this.getGridForView();
+            if (nextGrid) {
+                nextGrid.scrollTop = this.viewCacheState.scrollTopByMode[this.state.viewMode] || 0;
+            }
+        });
         if (this.isFavoritesView()) {
             const count = this.state.favorites.length;
             this.setStatus(count ? this.t("favoritesStatus", { count }) : this.t("favoritesEmpty"));
@@ -911,15 +957,25 @@ class CivitaiPromptPickerUI {
 
     updateFavoriteButtonState(imageId) {
         const key = String(imageId || "");
-        const button = this.favoriteElements.get(key);
-        if (!button) {
+        const buttons = this.favoriteElements.get(key);
+        if (!buttons?.size) {
             return;
         }
         const active = hasFavorite(this.state.favorites, key);
-        button.classList.toggle("is-active", active);
-        button.textContent = active ? "★" : "☆";
-        button.title = active ? this.t("favoriteRemove") : this.t("favoriteAdd");
-        button.setAttribute("aria-label", button.title);
+        const nextLabel = active ? this.t("favoriteRemove") : this.t("favoriteAdd");
+        for (const button of [...buttons]) {
+            if (!button?.isConnected) {
+                buttons.delete(button);
+                continue;
+            }
+            button.classList.toggle("is-active", active);
+            button.textContent = active ? "★" : "☆";
+            button.title = nextLabel;
+            button.setAttribute("aria-label", nextLabel);
+        }
+        if (!buttons.size) {
+            this.favoriteElements.delete(key);
+        }
     }
 
     toggleFavorite(item) {
@@ -933,12 +989,13 @@ class CivitaiPromptPickerUI {
             ? removeFavorite(this.state.favorites, imageId)
             : upsertFavorite(this.state.favorites, item);
         this.persistFavorites();
+        markViewDirty(this.viewCacheState, "favorites");
+        this.updateFavoriteButtonState(imageId);
 
         if (this.isFavoritesView()) {
-            this.clearGrid();
+            this.clearGrid("favorites");
             this.renderState();
         } else {
-            this.updateFavoriteButtonState(imageId);
             this.setStatus(this.t(active ? "favoriteRemoved" : "favoriteSaved", { id: imageId }));
         }
         this.markDirty();
@@ -975,26 +1032,38 @@ class CivitaiPromptPickerUI {
 
     needsViewportPrefill() {
         return shouldPrefillMore({
-            gridWidth: Number(this.gridEl?.clientWidth || 0),
-            gridHeight: Number(this.gridEl?.clientHeight || 0),
-            scrollHeight: Number(this.gridEl?.scrollHeight || 0),
-            itemCount: this.cardElements.size || this.state.items.length,
+            gridWidth: Number(this.feedGridEl?.clientWidth || 0),
+            gridHeight: Number(this.feedGridEl?.clientHeight || 0),
+            scrollHeight: Number(this.feedGridEl?.scrollHeight || 0),
+            itemCount: this.getCardMapForView("feed").size || this.state.items.length,
         });
     }
 
-    clearGrid() {
-        this.cardElements.clear();
-        this.favoriteElements.clear();
-        this.lastSelectedCard = null;
-        this.gridEl.replaceChildren();
+    clearGrid(viewMode = this.state.viewMode) {
+        const cardMap = this.getCardMapForView(viewMode);
+        for (const [id, card] of cardMap.entries()) {
+            const button = card.querySelector?.(".civitai-picker-favorite");
+            const buttons = this.favoriteElements.get(id);
+            if (button && buttons) {
+                buttons.delete(button);
+                if (!buttons.size) {
+                    this.favoriteElements.delete(id);
+                }
+            }
+        }
+        cardMap.clear();
+        this.lastSelectedCardByMode[viewMode] = null;
+        this.getGridForView(viewMode).replaceChildren();
+        markViewDirty(this.viewCacheState, viewMode);
     }
 
-    renderEmptyState(message) {
-        this.clearGrid();
-        this.gridEl.appendChild(createEmptyElement(message));
+    renderEmptyState(message, viewMode = this.state.viewMode) {
+        this.clearGrid(viewMode);
+        this.getGridForView(viewMode).appendChild(createEmptyElement(message));
+        markViewHydrated(this.viewCacheState, viewMode);
     }
 
-    createCard(item) {
+    createCard(item, viewMode = this.state.viewMode) {
         const card = document.createElement("div");
         card.className = "civitai-picker-card";
         card.dataset.itemId = String(item.id);
@@ -1005,7 +1074,7 @@ class CivitaiPromptPickerUI {
         image.className = "civitai-picker-image";
         image.src = item.thumbnail_url || item.image_url || "";
         image.alt = `Civitai ${item.id}`;
-        const currentIndex = this.cardElements.size;
+        const currentIndex = this.getCardMapForView(viewMode).size;
         image.loading = currentIndex < 6 ? "eager" : "lazy";
         image.decoding = "async";
         image.setAttribute("fetchpriority", currentIndex < 6 ? "high" : "low");
@@ -1059,45 +1128,54 @@ class CivitaiPromptPickerUI {
                 this.selectItem(item);
             }
         });
-        this.favoriteElements.set(String(item.id), favoriteButton);
+        const key = String(item.id);
+        const buttons = this.favoriteElements.get(key) || new Set();
+        buttons.add(favoriteButton);
+        this.favoriteElements.set(key, buttons);
         this.updateFavoriteButtonState(item.id);
         return card;
     }
 
-    appendItems(items) {
+    appendItems(items, viewMode = this.state.viewMode) {
         if (!items.length) {
             return;
         }
 
-        if (this.gridEl.firstElementChild?.classList.contains("civitai-picker-empty")) {
-            this.gridEl.replaceChildren();
+        const gridEl = this.getGridForView(viewMode);
+        const cardMap = this.getCardMapForView(viewMode);
+
+        if (gridEl.firstElementChild?.classList.contains("civitai-picker-empty")) {
+            gridEl.replaceChildren();
         }
 
         const fragment = document.createDocumentFragment();
         for (const item of items) {
             const id = String(item.id);
-            if (!id || this.cardElements.has(id)) {
+            if (!id || cardMap.has(id)) {
                 continue;
             }
-            const card = this.createCard(item);
-            this.cardElements.set(id, card);
+            const card = this.createCard(item, viewMode);
+            cardMap.set(id, card);
             fragment.appendChild(card);
         }
 
         if (fragment.childNodes.length) {
-            this.gridEl.appendChild(fragment);
+            gridEl.appendChild(fragment);
         }
-        this.updateSelectionState();
+        markViewHydrated(this.viewCacheState, viewMode);
+        this.updateSelectionState(viewMode);
     }
 
-    updateSelectionState() {
-        if (this.lastSelectedCard && this.lastSelectedCard.isConnected) {
-            this.lastSelectedCard.classList.remove("is-selected");
+    updateSelectionState(viewMode = this.state.viewMode) {
+        const lastSelectedCard = this.lastSelectedCardByMode[viewMode];
+        if (lastSelectedCard && lastSelectedCard.isConnected) {
+            lastSelectedCard.classList.remove("is-selected");
         }
 
-        this.lastSelectedCard = this.cardElements.get(String(this.state.selectedId || "")) || null;
-        if (this.lastSelectedCard) {
-            this.lastSelectedCard.classList.add("is-selected");
+        const nextSelectedCard = this.getCardMapForView(viewMode).get(String(this.state.selectedId || "")) || null;
+        this.lastSelectedCardByMode[viewMode] = nextSelectedCard;
+        if (nextSelectedCard) {
+            nextSelectedCard.classList.add("is-selected");
         }
     }
 
@@ -1109,33 +1187,37 @@ class CivitaiPromptPickerUI {
         if (this.isFavoritesView()) {
             const favorites = this.getVisibleItems();
             if (!favorites.length) {
-                this.renderEmptyState(this.t("favoritesEmpty"));
+                if (shouldHydrateView(this.viewCacheState, "favorites")) {
+                    this.renderEmptyState(this.t("favoritesEmpty"), "favorites");
+                }
                 this.setStatus(this.t("favoritesEmpty"));
                 return;
             }
-            if (!this.cardElements.size) {
-                this.appendItems(favorites);
+            if (shouldHydrateView(this.viewCacheState, "favorites") || !this.getCardMapForView("favorites").size) {
+                this.clearGrid("favorites");
+                this.appendItems(favorites, "favorites");
             } else {
-                this.updateSelectionState();
+                this.updateSelectionState("favorites");
             }
             this.setStatus(this.t("favoritesStatus", { count: favorites.length }));
             return;
         }
 
         if (this.state.loading && !this.state.items.length) {
-            this.renderEmptyState(this.t("loadingThumbnails"));
+            this.renderEmptyState(this.t("loadingThumbnails"), "feed");
             return;
         }
 
         if (!this.state.items.length) {
-            this.renderEmptyState(this.t("noVisibleImages"));
+            this.renderEmptyState(this.t("noVisibleImages"), "feed");
             return;
         }
 
-        if (!this.cardElements.size) {
-            this.appendItems(this.state.items);
+        if (shouldHydrateView(this.viewCacheState, "feed") || !this.getCardMapForView("feed").size) {
+            this.clearGrid("feed");
+            this.appendItems(this.state.items, "feed");
         } else {
-            this.updateSelectionState();
+            this.updateSelectionState("feed");
         }
     }
 

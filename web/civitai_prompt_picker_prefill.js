@@ -1,6 +1,6 @@
 export const GRID_MIN_CARD_WIDTH = 110;
 export const GRID_GAP = 8;
-export const MIN_PREFILL_ROWS = 2;
+export const ESTIMATED_CARD_HEIGHT = 150;
 export const PREFILL_SCROLL_THRESHOLD = 24;
 
 
@@ -17,7 +17,7 @@ export function computePrefillItemTarget(gridWidth, gridHeight) {
     const width = toPositiveNumber(gridWidth, GRID_MIN_CARD_WIDTH);
     const height = toPositiveNumber(gridHeight, 0);
     const columns = Math.max(1, Math.floor((width + GRID_GAP) / (GRID_MIN_CARD_WIDTH + GRID_GAP)));
-    const rows = height >= 180 ? MIN_PREFILL_ROWS : 1;
+    const rows = Math.max(1, Math.ceil((height + GRID_GAP) / (ESTIMATED_CARD_HEIGHT + GRID_GAP)));
     return columns * rows;
 }
 

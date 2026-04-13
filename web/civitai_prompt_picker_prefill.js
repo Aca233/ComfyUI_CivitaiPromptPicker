@@ -48,3 +48,22 @@ export function shouldDeferPrefillAfterFirstBatch({
 }) {
     return Boolean(isReset && appendedCount > 0 && hasMore && needsViewportPrefill);
 }
+
+
+export function shouldScheduleViewportPrefill({
+    isFeedView,
+    isLoading,
+    hasMore,
+    itemCount,
+    needsViewportPrefill,
+    alreadyScheduled,
+}) {
+    return Boolean(
+        isFeedView &&
+        !isLoading &&
+        hasMore &&
+        (Number(itemCount) || 0) > 0 &&
+        needsViewportPrefill &&
+        !alreadyScheduled
+    );
+}

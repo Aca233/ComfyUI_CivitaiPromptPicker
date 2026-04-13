@@ -15,7 +15,11 @@ import {
     serializeFavorites,
     upsertFavorite,
 } from "./civitai_prompt_picker_favorites.js";
-import { shouldDeferPrefillAfterFirstBatch, shouldPrefillMore } from "./civitai_prompt_picker_prefill.js";
+import {
+    shouldDeferPrefillAfterFirstBatch,
+    shouldPrefillMore,
+    shouldScheduleViewportPrefill,
+} from "./civitai_prompt_picker_prefill.js";
 import {
     createViewCacheState,
     markViewDirty,
@@ -86,7 +90,6 @@ function ensureStyles() {
     style.id = STYLE_ID;
     style.textContent = `
         .civitai-picker {
-            --civitai-grid-height: 320px;
             --civitai-preview-height: 150px;
             display: flex;
             flex-direction: column;
@@ -167,8 +170,7 @@ function ensureStyles() {
             grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
             gap: 8px;
             flex: 1 1 auto;
-            min-height: 0;
-            height: var(--civitai-grid-height);
+            min-height: 120px;
             max-height: none;
             overflow-y: auto;
             overflow-x: hidden;
@@ -310,13 +312,11 @@ function computeLayoutMetrics(nodeSize) {
     const width = Math.max(DEFAULT_NODE_SIZE[0], Number(nodeSize?.[0] || DEFAULT_NODE_SIZE[0]));
     const rawHeight = Number(nodeSize?.[1] || DEFAULT_NODE_SIZE[1]);
     const widgetHeight = clamp(rawHeight - NODE_CHROME_HEIGHT, MIN_WIDGET_HEIGHT, MAX_WIDGET_HEIGHT);
-    const previewHeight = clamp(Math.round(widgetHeight * 0.15), 68, 120);
-    const gridHeight = Math.max(120, widgetHeight - previewHeight - 176);
+    const previewHeight = clamp(Math.round(widgetHeight * 0.14), 64, 112);
     return {
         width,
         widgetHeight,
         previewHeight,
-        gridHeight,
     };
 }
 
@@ -545,6 +545,7 @@ class CivitaiPromptPickerUI {
         this.reloadTimer = null;
         this.pendingReset = false;
         this.deferredPrefillRequested = false;
+        this.viewportPrefillScheduled = false;
         this.cardElementsByMode = {
             feed: new Map(),
             favorites: new Map(),
@@ -783,9 +784,11 @@ class CivitaiPromptPickerUI {
     syncLayout(size = this.node.size) {
         this.layout = computeLayoutMetrics(size);
         this.element.style.height = `${this.layout.widgetHeight}px`;
-        this.root.style.setProperty("--civitai-grid-height", `${this.layout.gridHeight}px`);
         this.root.style.setProperty("--civitai-preview-height", `${this.layout.previewHeight}px`);
         this.markDirty();
+        if (!this.deferredPrefillRequested) {
+            this.scheduleViewportPrefill();
+        }
     }
 
     renderBaseModelSuggestions() {
@@ -948,6 +951,7 @@ class CivitaiPromptPickerUI {
             return;
         }
         this.restoreFeedStatus();
+        this.scheduleViewportPrefill();
     }
 
     persistFavorites() {
@@ -1036,6 +1040,36 @@ class CivitaiPromptPickerUI {
             gridHeight: Number(this.feedGridEl?.clientHeight || 0),
             scrollHeight: Number(this.feedGridEl?.scrollHeight || 0),
             itemCount: this.getCardMapForView("feed").size || this.state.items.length,
+        });
+    }
+
+    scheduleViewportPrefill() {
+        if (!shouldScheduleViewportPrefill({
+            isFeedView: !this.isFavoritesView(),
+            isLoading: this.state.loading,
+            hasMore: this.state.hasMore,
+            itemCount: this.state.items.length,
+            needsViewportPrefill: this.needsViewportPrefill(),
+            alreadyScheduled: this.viewportPrefillScheduled,
+        })) {
+            return;
+        }
+
+        this.viewportPrefillScheduled = true;
+        requestAnimationFrame(() => {
+            this.viewportPrefillScheduled = false;
+            if (!shouldScheduleViewportPrefill({
+                isFeedView: !this.isFavoritesView(),
+                isLoading: this.state.loading,
+                hasMore: this.state.hasMore,
+                itemCount: this.state.items.length,
+                needsViewportPrefill: this.needsViewportPrefill(),
+                alreadyScheduled: false,
+            })) {
+                return;
+            }
+            this.setStatus(this.t("continuePrefill"));
+            this.loadImages(false);
         });
     }
 

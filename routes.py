@@ -23,6 +23,19 @@ SIZE_PATTERN = re.compile(r"^\s*(\d+)\s*[xX]\s*(\d+)\s*$")
 FETCH_RETRY_ATTEMPTS = 3
 FETCH_RETRY_DELAY_SECONDS = 1.0
 MAX_SOURCE_PAGES_PER_RESULT_PAGE = 8
+EXPANDED_UPSTREAM_LIMIT_MULTIPLIER = 5
+MAX_UPSTREAM_PAGE_LIMIT = 120
+LOCAL_ONLY_BASE_MODEL_FILTERS = {
+    "Flux",
+    "SDXL",
+    "SD 1.5",
+    "SD 2.0",
+    "SD 2.1",
+    "SD 3",
+    "SD 3.5",
+    "Hunyuan",
+    "Wan",
+}
 
 
 def is_allowed_next_page(next_page):
@@ -59,6 +72,50 @@ def normalize_base_model(base_model):
         return aliases[compact]
 
     return " ".join(word.upper() if word.isupper() else word.capitalize() for word in text.split())
+
+
+def base_model_filter_key(base_model):
+    text = normalize_base_model(base_model)
+    lowered = re.sub(r"[^a-z0-9]+", " ", text.lower())
+    return " ".join(lowered.split())
+
+
+def base_model_matches_filter(item_base_model, wanted_base_model):
+    wanted_key = base_model_filter_key(wanted_base_model)
+    if not wanted_key:
+        return True
+
+    item_key = base_model_filter_key(item_base_model)
+    if not item_key:
+        return False
+
+    return item_key == wanted_key or item_key.startswith(f"{wanted_key} ")
+
+
+def apply_api_filter_aliases(filters):
+    normalized = dict(filters or {})
+    base_model = normalize_base_model(normalized.get("base_model", ""))
+    normalized["base_model"] = (
+        "" if base_model in LOCAL_ONLY_BASE_MODEL_FILTERS else base_model
+    )
+    return normalized
+
+
+def uses_sparse_local_filters(filters):
+    normalized = dict(filters or {})
+    base_model = normalize_base_model(normalized.get("base_model", ""))
+    return bool(
+        normalized.get("metadata_only")
+        or normalized.get("nsfw") == "true"
+        or base_model in LOCAL_ONLY_BASE_MODEL_FILTERS
+    )
+
+
+def get_upstream_request_limit(limit, filters):
+    limit = max(1, int(limit))
+    if not uses_sparse_local_filters(filters):
+        return min(limit, MAX_UPSTREAM_PAGE_LIMIT)
+    return min(MAX_UPSTREAM_PAGE_LIMIT, max(limit, limit * EXPANDED_UPSTREAM_LIMIT_MULTIPLIER))
 
 
 def normalize_nsfw(value):
@@ -227,6 +284,7 @@ def append_filters_to_next_page(next_page, filters):
     if not next_page:
         return ""
 
+    filters = apply_api_filter_aliases(filters)
     parts = urlsplit(next_page)
     query_items = dict(parse_qsl(parts.query, keep_blank_values=True))
     if filters.get("period"):
@@ -255,7 +313,7 @@ def apply_local_filters(items, filters):
     for item in items:
         if filters.get("metadata_only") and not item.get("has_metadata"):
             continue
-        if wanted_base_model and item.get("base_model") != wanted_base_model:
+        if wanted_base_model and not base_model_matches_filter(item.get("base_model"), wanted_base_model):
             continue
         if wanted_nsfw == "false" and item.get("nsfw"):
             continue
@@ -384,6 +442,7 @@ async def enrich_with_model_ids(items, session):
 
 
 def build_request_url(limit, next_page, filters):
+    filters = apply_api_filter_aliases(filters)
     if next_page:
         return append_filters_to_next_page(next_page, filters)
 
@@ -417,9 +476,10 @@ async def fetch_civitai_images(limit=12, next_page="", filters=None):
         seen_upstream_ids = set()
         seen_visible_ids = set()
         current_next_page = next_page
+        request_limit = get_upstream_request_limit(limit, filters)
 
         for _ in range(MAX_SOURCE_PAGES_PER_RESULT_PAGE):
-            request_url = build_request_url(limit=limit, next_page=current_next_page, filters=filters)
+            request_url = build_request_url(limit=request_limit, next_page=current_next_page, filters=filters)
             payload = await fetch_json(request_url, session)
             normalized = normalize_civitai_payload(payload)
 

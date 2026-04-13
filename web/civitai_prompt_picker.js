@@ -15,6 +15,8 @@ import {
     serializeFavorites,
     upsertFavorite,
 } from "./civitai_prompt_picker_favorites.js";
+import { buildImageFallbackChain } from "./civitai_prompt_picker_image_fallback.js";
+import { buildCivitaiImagePageUrl } from "./civitai_prompt_picker_links.js";
 import {
     shouldDeferPrefillAfterFirstBatch,
     shouldPrefillMore,
@@ -28,6 +30,11 @@ import {
     shouldHydrateView,
     switchViewMode,
 } from "./civitai_prompt_picker_view_cache.js";
+import {
+    createRequestControlState,
+    markResetRequestedWhileLoading,
+    shouldAbortActiveLoadForReset,
+} from "./civitai_prompt_picker_request_control.js";
 
 
 const EXTENSION_NAME = "Comfy.CivitaiPromptPicker";
@@ -178,6 +185,10 @@ function ensureStyles() {
             align-content: start;
             align-items: start;
         }
+        .civitai-picker-grid[hidden],
+        .civitai-picker-loader[hidden] {
+            display: none !important;
+        }
         .civitai-picker-card {
             border: 1px solid rgba(255, 255, 255, 0.12);
             background: rgba(18, 24, 33, 0.96);
@@ -233,6 +244,7 @@ function ensureStyles() {
             font-size: 15px;
             line-height: 1;
             padding: 0;
+            z-index: 2;
         }
         .civitai-picker-favorite.is-active {
             color: #ffd45c;
@@ -305,6 +317,21 @@ function chainCallback(target, property, callback) {
 
 function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
+}
+
+
+function createAbortError() {
+    if (typeof DOMException !== "undefined") {
+        return new DOMException("Request aborted", "AbortError");
+    }
+    const error = new Error("Request aborted");
+    error.name = "AbortError";
+    return error;
+}
+
+
+function isAbortError(error) {
+    return error?.name === "AbortError";
 }
 
 
@@ -543,7 +570,9 @@ class CivitaiPromptPickerUI {
         this.loadingMore = false;
         this.scrollTicking = false;
         this.reloadTimer = null;
-        this.pendingReset = false;
+        this.requestControl = createRequestControlState();
+        this.activeAbortController = null;
+        this.activeLoadToken = 0;
         this.deferredPrefillRequested = false;
         this.viewportPrefillScheduled = false;
         this.cardElementsByMode = {
@@ -653,7 +682,7 @@ class CivitaiPromptPickerUI {
         this.refreshButton.type = "button";
         this.refreshButton.className = "civitai-picker-button";
         this.refreshButton.textContent = this.t("applyFilters");
-        this.refreshButton.addEventListener("click", () => this.loadImages(true));
+        this.refreshButton.addEventListener("click", () => this.requestReload({ immediate: true }));
 
         this.favoritesButton = document.createElement("button");
         this.favoritesButton.type = "button";
@@ -760,13 +789,19 @@ class CivitaiPromptPickerUI {
         }
 
         if (immediate) {
+            const { abortRequested } = markResetRequestedWhileLoading(this.requestControl);
+            if (abortRequested) {
+                this.activeAbortController?.abort();
+                this.setStatus(this.t("loadingByFilters"));
+                return;
+            }
             this.loadImages(true);
             return;
         }
 
         this.reloadTimer = window.setTimeout(() => {
             this.reloadTimer = null;
-            this.loadImages(true);
+            this.requestReload({ immediate: true });
         }, FILTER_INPUT_DEBOUNCE_MS);
     }
 
@@ -806,7 +841,7 @@ class CivitaiPromptPickerUI {
         const rebuiltSelect = makeSelect(options);
         rebuiltSelect.addEventListener("change", () => {
             this.syncBaseModelControls();
-            this.loadImages(true);
+            this.requestReload({ immediate: true });
         });
         rebuiltSelect.className = this.baseModelSelect.className;
 
@@ -1009,6 +1044,14 @@ class CivitaiPromptPickerUI {
         this.statusEl.textContent = message;
     }
 
+    openImagePage(imageId) {
+        const url = buildCivitaiImagePageUrl(imageId);
+        if (!url) {
+            return;
+        }
+        window.open?.(url, "_blank", "noopener,noreferrer");
+    }
+
     getRequestBatchSize(filters) {
         const isFilteredLookup = Boolean(
             filters?.baseModel ||
@@ -1106,13 +1149,25 @@ class CivitaiPromptPickerUI {
 
         const image = document.createElement("img");
         image.className = "civitai-picker-image";
-        image.src = item.thumbnail_url || item.image_url || "";
         image.alt = `Civitai ${item.id}`;
         const currentIndex = this.getCardMapForView(viewMode).size;
         image.loading = currentIndex < 6 ? "eager" : "lazy";
         image.decoding = "async";
         image.setAttribute("fetchpriority", currentIndex < 6 ? "high" : "low");
         image.referrerPolicy = "no-referrer";
+        const imageFallbackChain = buildImageFallbackChain(item);
+        image.dataset.fallbackIndex = "0";
+        image.addEventListener("error", () => {
+            const currentIndexValue = Number(image.dataset.fallbackIndex || 0);
+            const nextIndex = currentIndexValue + 1;
+            const nextUrl = imageFallbackChain[nextIndex] || "";
+            if (!nextUrl) {
+                return;
+            }
+            image.dataset.fallbackIndex = String(nextIndex);
+            image.src = nextUrl;
+        });
+        image.src = imageFallbackChain[0] || "";
         const width = Math.max(1, Number(item.width || 0) || 1);
         const height = Math.max(1, Number(item.height || 0) || 1);
         image.width = width;
@@ -1156,6 +1211,12 @@ class CivitaiPromptPickerUI {
 
         card.append(media, metaId, metaInfo);
         card.addEventListener("click", () => this.selectItem(item));
+        card.addEventListener("dblclick", (event) => {
+            if (event.target?.closest?.(".civitai-picker-favorite")) {
+                return;
+            }
+            this.openImagePage(item.id);
+        });
         card.addEventListener("keydown", (event) => {
             if (event.key === "Enter" || event.key === " ") {
                 event.preventDefault();
@@ -1262,7 +1323,10 @@ class CivitaiPromptPickerUI {
 
         if (this.state.loading) {
             if (reset) {
-                this.pendingReset = true;
+                const { abortRequested } = markResetRequestedWhileLoading(this.requestControl);
+                if (abortRequested) {
+                    this.activeAbortController?.abort();
+                }
             }
             return;
         }
@@ -1293,13 +1357,21 @@ class CivitaiPromptPickerUI {
         }
 
         this.state.filters = filters;
+        this.requestControl.pendingReset = false;
         this.state.loading = true;
+        this.requestControl.loading = true;
         this.loadingMore = !reset;
         this.renderState();
         this.setStatus(reset ? this.t("loadingByFilters") : this.t("loadingMoreStatus"));
+        const loadToken = ++this.activeLoadToken;
+        const abortController = typeof AbortController !== "undefined" ? new AbortController() : null;
+        this.activeAbortController = abortController;
 
         try {
             while (true) {
+                if (shouldAbortActiveLoadForReset(this.requestControl)) {
+                    throw createAbortError();
+                }
                 const pageToken = nextPage || "__FIRST__";
                 if (seenPageTokens.has(pageToken)) {
                     this.state.hasMore = false;
@@ -1311,8 +1383,12 @@ class CivitaiPromptPickerUI {
                 const response = await api.fetchApi(buildEndpoint(limit, nextPage, filters), {
                     cache: "no-store",
                     headers: apiKey ? { "X-Civitai-Api-Key": apiKey } : undefined,
+                    signal: abortController?.signal,
                 });
                 const payload = await response.json();
+                if (shouldAbortActiveLoadForReset(this.requestControl)) {
+                    throw createAbortError();
+                }
                 if (!response.ok) {
                     throw new Error(payload?.error || `HTTP ${response.status}`);
                 }
@@ -1390,23 +1466,29 @@ class CivitaiPromptPickerUI {
                 this.setStatus(this.t("loadedMore", { count: this.state.items.length }));
             }
         } catch (error) {
-            this.setStatus(this.t("loadFailed", { error: error.message || error }));
-            if (!this.state.items.length) {
-                this.renderEmptyState(this.t("loadFailedRetry"));
+            if (!isAbortError(error)) {
+                this.setStatus(this.t("loadFailed", { error: error.message || error }));
+                if (!this.state.items.length) {
+                    this.renderEmptyState(this.t("loadFailedRetry"));
+                }
             }
         } finally {
             this.state.loading = false;
+            this.requestControl.loading = false;
             this.loadingMore = false;
+            if (this.activeLoadToken === loadToken) {
+                this.activeAbortController = null;
+            }
             this.renderState();
             this.syncFromWidgets();
             this.syncLayout();
-            if (this.deferredPrefillRequested && this.state.hasMore && !this.pendingReset) {
+            if (this.deferredPrefillRequested && this.state.hasMore && !this.requestControl.pendingReset) {
                 this.deferredPrefillRequested = false;
                 this.setStatus(this.t("continuePrefillFirstScreen", { count: this.state.items.length }));
                 requestAnimationFrame(() => this.loadImages(false));
             }
-            if (this.pendingReset) {
-                this.pendingReset = false;
+            if (this.requestControl.pendingReset) {
+                this.requestControl.pendingReset = false;
                 this.requestReload({ immediate: true });
             }
         }

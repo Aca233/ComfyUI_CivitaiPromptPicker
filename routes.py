@@ -1,4 +1,6 @@
+import base64
 import asyncio
+import json
 import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -87,6 +89,8 @@ LOCAL_ONLY_BASE_MODEL_FILTERS = {
     "NoobAI",
     "HiDream",
     "ZImage",
+    "ZImageTurbo",
+    "ZImageBase",
     "Hunyuan",
     "Hunyuan Video",
     "PixArt a",
@@ -99,10 +103,40 @@ LOCAL_ONLY_BASE_MODEL_FILTERS = {
     "Wan Video",
 }
 FAMILY_PREFIX_BASE_MODEL_KEYS = {"anima", "zimage"}
+FAMILY_BASE_MODEL_QUERY_VALUES = {
+    "SD 1.5": ["SD 1.5"],
+    "SD 2.0": ["SD 2.0"],
+    "SD 2.1": ["SD 2.1"],
+    "Anima": ["Anima"],
+    "Illustrious": ["Illustrious"],
+    "NoobAI": ["NoobAI"],
+    "HiDream": ["HiDream"],
+    "Hunyuan Video": ["Hunyuan Video"],
+    "PixArt a": ["PixArt a"],
+    "Playground v2": ["Playground v2"],
+    "Stable Cascade": ["Stable Cascade"],
+    "Kolors": ["Kolors"],
+    "Lumina": ["Lumina"],
+    "Wan Video": ["Wan Video"],
+    "ZImage": ["ZImageTurbo", "ZImageBase"],
+    "ZImageTurbo": ["ZImageTurbo"],
+    "ZImageBase": ["ZImageBase"],
+}
+FAMILY_MODEL_PAGE_LIMIT = 20
+FAMILY_IMAGE_PAGE_LIMIT_MIN = 24
+FAMILY_IMAGE_PAGE_LIMIT_MAX = 48
+MAX_FAMILY_SOURCE_REQUESTS_PER_RESULT_PAGE = 12
+CUSTOM_NEXT_PAGE_STRATEGY_KEY = "__cpp_strategy"
+CUSTOM_NEXT_PAGE_STATE_KEY = "__cpp_state"
+CUSTOM_NEXT_PAGE_STRATEGY_FAMILY = "family_base_model"
 
 
 def is_allowed_next_page(next_page):
     return not next_page or next_page.startswith(CIVITAI_IMAGES_URL)
+
+
+def is_allowed_models_next_page(next_page):
+    return not next_page or next_page.startswith(CIVITAI_MODELS_URL)
 
 
 def describe_error(error):
@@ -254,6 +288,93 @@ def get_upstream_request_limit(limit, filters):
     if not uses_sparse_local_filters(filters):
         return min(limit, MAX_UPSTREAM_PAGE_LIMIT)
     return min(MAX_UPSTREAM_PAGE_LIMIT, max(limit, limit * EXPANDED_UPSTREAM_LIMIT_MULTIPLIER))
+
+
+def should_use_family_base_model_strategy(filters):
+    normalized = dict(filters or {})
+    base_model = normalize_base_model(normalized.get("base_model", ""))
+    return bool(
+        base_model in FAMILY_BASE_MODEL_QUERY_VALUES
+        and not normalized.get("model_id")
+        and not normalized.get("model_version_id")
+    )
+
+
+def get_family_image_request_limit(limit):
+    limit = max(1, int(limit))
+    return min(FAMILY_IMAGE_PAGE_LIMIT_MAX, max(FAMILY_IMAGE_PAGE_LIMIT_MIN, limit * 2))
+
+
+def build_family_models_request_url(base_model, limit, next_page="", filters=None):
+    if next_page:
+        return next_page
+    filters = filters or {}
+    params = {
+        "limit": str(max(1, int(limit))),
+        "baseModels": str(base_model or "").strip(),
+    }
+    if filters.get("model_tag"):
+        params["tag"] = str(filters["model_tag"]).strip()
+    return f"{CIVITAI_MODELS_URL}?{urlencode(params)}"
+
+
+def extract_family_model_version_ids(payload, allowed_base_models):
+    version_ids = []
+    seen = set()
+    allowed = {normalize_base_model(value) for value in (allowed_base_models or []) if value}
+    for item in payload.get("items", []):
+        for version in item.get("modelVersions") or []:
+            version_id = str(version.get("id") or "").strip()
+            if not version_id or version_id in seen:
+                continue
+            if allowed and normalize_base_model(version.get("baseModel")) not in allowed:
+                continue
+            if not (version.get("images") or []):
+                continue
+            seen.add(version_id)
+            version_ids.append(version_id)
+    return version_ids
+
+
+def encode_custom_next_page(strategy, state):
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(state, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    return f"{CIVITAI_IMAGES_URL}?{urlencode({CUSTOM_NEXT_PAGE_STRATEGY_KEY: strategy, CUSTOM_NEXT_PAGE_STATE_KEY: encoded})}"
+
+
+def decode_custom_next_page(next_page):
+    if not next_page:
+        return "", None
+
+    parts = urlsplit(str(next_page))
+    query_items = dict(parse_qsl(parts.query, keep_blank_values=True))
+    strategy = query_items.get(CUSTOM_NEXT_PAGE_STRATEGY_KEY, "").strip()
+    encoded_state = query_items.get(CUSTOM_NEXT_PAGE_STATE_KEY, "").strip()
+    if not strategy or not encoded_state:
+        return "", None
+
+    padded = encoded_state + ("=" * ((4 - len(encoded_state) % 4) % 4))
+    try:
+        state = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+    except Exception as error:
+        raise ValueError("Invalid next_page state") from error
+    if not isinstance(state, dict):
+        raise ValueError("Invalid next_page state")
+    return strategy, state
+
+
+def normalize_family_strategy_state(base_model, state):
+    normalized_base_model = normalize_base_model(base_model)
+    state = state or {}
+    return {
+        "base_model": normalize_base_model(state.get("base_model", normalized_base_model)) or normalized_base_model,
+        "variant_index": max(0, safe_int(state.get("variant_index"), 0)),
+        "models_next_page": str(state.get("models_next_page", "") or "").strip(),
+        "pending_version_ids": [str(value).strip() for value in state.get("pending_version_ids", []) if str(value).strip()],
+        "current_version_id": str(state.get("current_version_id", "") or "").strip(),
+        "current_images_next_page": str(state.get("current_images_next_page", "") or "").strip(),
+    }
 
 
 def normalize_nsfw(value):
@@ -527,6 +648,9 @@ def parse_filters(query):
     metadata_only = str(query.get("metadata_only", "")).strip().lower() in {"1", "true", "yes", "on"}
     model_id = str(query.get("model_id", "")).strip()
     model_version_id = str(query.get("model_version_id", "")).strip()
+    username = str(query.get("username", "")).strip()
+    post_id = str(query.get("post_id", "")).strip()
+    model_tag = str(query.get("model_tag", "")).strip()
     nsfw = normalize_nsfw(query.get("nsfw", ""))
     sort = normalize_sort(query.get("sort", ""))
     tags = normalize_tag_filters(query.get("tags", ""))
@@ -540,6 +664,9 @@ def parse_filters(query):
         "metadata_only": metadata_only,
         "model_id": model_id,
         "model_version_id": model_version_id,
+        "username": username,
+        "post_id": post_id,
+        "model_tag": model_tag,
         "nsfw": nsfw,
         "sort": sort,
         "tags": tags,
@@ -564,6 +691,10 @@ def append_filters_to_next_page(next_page, filters):
         query_items["modelId"] = filters["model_id"]
     if filters.get("model_version_id"):
         query_items["modelVersionId"] = filters["model_version_id"]
+    if filters.get("post_id"):
+        query_items["postId"] = filters["post_id"]
+    if filters.get("username"):
+        query_items["username"] = filters["username"]
     if filters.get("nsfw"):
         query_items["nsfw"] = filters["nsfw"]
     if filters.get("sort"):
@@ -744,6 +875,10 @@ def build_request_url(limit, next_page, filters):
         params["modelId"] = filters["model_id"]
     if filters.get("model_version_id"):
         params["modelVersionId"] = filters["model_version_id"]
+    if filters.get("post_id"):
+        params["postId"] = filters["post_id"]
+    if filters.get("username"):
+        params["username"] = filters["username"]
     if filters.get("nsfw"):
         params["nsfw"] = "X" if filters["nsfw"] == "true" else filters["nsfw"]
     if filters.get("sort"):
@@ -751,18 +886,146 @@ def build_request_url(limit, next_page, filters):
     return f"{CIVITAI_IMAGES_URL}?{urlencode(params)}"
 
 
-def build_models_request_url(query, limit):
+def build_models_request_url(query, limit, filters=None):
+    filters = filters or {}
     params = {
         "limit": str(max(1, int(limit))),
         "query": str(query or "").strip(),
     }
+    if filters.get("model_tag"):
+        params["tag"] = str(filters["model_tag"]).strip()
+    if filters.get("username"):
+        params["username"] = str(filters["username"]).strip()
     return f"{CIVITAI_MODELS_URL}?{urlencode(params)}"
+
+
+async def fetch_family_base_model_images(limit=12, next_page="", filters=None):
+    filters = filters or {}
+    strategy, decoded_state = decode_custom_next_page(next_page)
+    base_model = normalize_base_model(
+        filters.get("base_model", "") or (decoded_state or {}).get("base_model", "")
+    )
+    family_values = FAMILY_BASE_MODEL_QUERY_VALUES.get(base_model, [])
+    if not family_values:
+        return {
+            "items": [],
+            "next_page": "",
+            "diagnostics": build_diagnostics([], [], "", filters),
+        }
+
+    state = normalize_family_strategy_state(
+        base_model,
+        decoded_state if strategy == CUSTOM_NEXT_PAGE_STRATEGY_FAMILY else None,
+    )
+    if not is_allowed_models_next_page(state["models_next_page"]):
+        raise ValueError("Invalid next_page URL")
+    if not is_allowed_next_page(state["current_images_next_page"]):
+        raise ValueError("Invalid next_page URL")
+
+    family_filters = dict(filters)
+    family_filters["base_model"] = ""
+    family_filters["model_id"] = ""
+    family_filters["model_version_id"] = ""
+
+    async with ClientSession(
+        timeout=DEFAULT_TIMEOUT,
+        headers=build_request_headers(filters),
+    ) as session:
+        aggregated_upstream_items = []
+        aggregated_visible_items = []
+        seen_upstream_ids = set()
+        seen_visible_ids = set()
+        source_requests_remaining = MAX_FAMILY_SOURCE_REQUESTS_PER_RESULT_PAGE
+
+        while source_requests_remaining > 0 and len(aggregated_visible_items) < limit:
+            if state["current_version_id"]:
+                version_filters = dict(family_filters)
+                version_filters["model_version_id"] = state["current_version_id"]
+                request_url = build_request_url(
+                    limit=get_family_image_request_limit(limit),
+                    next_page=state["current_images_next_page"],
+                    filters=version_filters,
+                )
+                payload = await fetch_json(request_url, session)
+                normalized = normalize_civitai_payload(payload)
+                upstream_items = normalized["items"]
+                for item in upstream_items:
+                    if not item.get("model_version_ids"):
+                        item["model_version_ids"] = [state["current_version_id"]]
+
+                visible_items = apply_local_filters(upstream_items, filters)
+                extend_unique_items(aggregated_upstream_items, upstream_items, seen_upstream_ids)
+                extend_unique_items(aggregated_visible_items, visible_items, seen_visible_ids)
+
+                state["current_images_next_page"] = normalized["next_page"] or ""
+                if not state["current_images_next_page"]:
+                    state["current_version_id"] = ""
+
+                source_requests_remaining -= 1
+                continue
+
+            if state["pending_version_ids"]:
+                state["current_version_id"] = state["pending_version_ids"].pop(0)
+                state["current_images_next_page"] = ""
+                continue
+
+            if state["variant_index"] >= len(family_values):
+                break
+
+            request_url = build_family_models_request_url(
+                family_values[state["variant_index"]],
+                FAMILY_MODEL_PAGE_LIMIT,
+                next_page=state["models_next_page"],
+                filters=filters,
+            )
+            payload = await fetch_json(request_url, session)
+            version_ids = extract_family_model_version_ids(
+                payload,
+                [family_values[state["variant_index"]]],
+            )
+            state["pending_version_ids"].extend(version_id for version_id in version_ids if version_id not in state["pending_version_ids"])
+
+            metadata = payload.get("metadata") or {}
+            state["models_next_page"] = str(metadata.get("nextPage") or "").strip()
+            if not state["models_next_page"]:
+                state["variant_index"] += 1
+
+            source_requests_remaining -= 1
+
+    has_more = bool(
+        state["current_version_id"]
+        or state["current_images_next_page"]
+        or state["pending_version_ids"]
+        or state["models_next_page"]
+        or state["variant_index"] < len(family_values)
+    )
+    next_page = (
+        encode_custom_next_page(CUSTOM_NEXT_PAGE_STRATEGY_FAMILY, state)
+        if has_more
+        else ""
+    )
+    return {
+        "items": aggregated_visible_items,
+        "next_page": next_page,
+        "diagnostics": build_diagnostics(
+            aggregated_upstream_items,
+            aggregated_visible_items,
+            next_page,
+            filters,
+        ),
+    }
 
 
 async def fetch_civitai_images(limit=12, next_page="", filters=None):
     filters = filters or {}
     if not is_allowed_next_page(next_page):
         raise ValueError("Invalid next_page URL")
+
+    strategy, _ = decode_custom_next_page(next_page)
+    if strategy and strategy != CUSTOM_NEXT_PAGE_STRATEGY_FAMILY:
+        raise ValueError("Invalid next_page URL")
+    if strategy == CUSTOM_NEXT_PAGE_STRATEGY_FAMILY or should_use_family_base_model_strategy(filters):
+        return await fetch_family_base_model_images(limit=limit, next_page=next_page, filters=filters)
 
     async with ClientSession(
         timeout=DEFAULT_TIMEOUT,
@@ -812,7 +1075,7 @@ async def fetch_civitai_models(query, limit=8, filters=None):
         timeout=DEFAULT_TIMEOUT,
         headers=build_request_headers(filters),
     ) as session:
-        payload = await fetch_json(build_models_request_url(query, limit), session)
+        payload = await fetch_json(build_models_request_url(query, limit, filters=filters), session)
     return normalize_civitai_model_search_payload(payload)
 
 
@@ -851,9 +1114,13 @@ async def _handle_civitai_models(request, model_fetcher):
     except ValueError:
         limit = 8
 
+    parsed_filters = parse_filters(request.rel_url.query)
     filters = {
         "api_key": request.headers.get("X-Civitai-Api-Key", "").strip(),
+        "model_tag": parsed_filters.get("model_tag", ""),
     }
+    if parsed_filters.get("username"):
+        filters["username"] = parsed_filters["username"]
 
     try:
         payload = await model_fetcher(query=query, limit=limit, filters=filters)

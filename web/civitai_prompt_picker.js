@@ -86,7 +86,8 @@ const BASE_MODEL_SUGGESTIONS = [
     "Illustrious",
     "NoobAI",
     "HiDream",
-    "ZImage",
+    "ZImageTurbo",
+    "ZImageBase",
     "Hunyuan",
     "Hunyuan Video",
     "PixArt a",
@@ -98,6 +99,24 @@ const BASE_MODEL_SUGGESTIONS = [
     "Wan Video",
     "Cosmos",
 ];
+const MODEL_TAG_UPSTREAM_BASE_MODELS = new Set([
+    "SD 1.5",
+    "SD 2.0",
+    "SD 2.1",
+    "Anima",
+    "Illustrious",
+    "NoobAI",
+    "HiDream",
+    "Hunyuan Video",
+    "PixArt a",
+    "Playground v2",
+    "Stable Cascade",
+    "Kolors",
+    "Lumina",
+    "Wan Video",
+    "ZImageTurbo",
+    "ZImageBase",
+]);
 
 
 function ensureStyles() {
@@ -523,6 +542,15 @@ function buildEndpoint(limit, nextPage, filters) {
     if (filters.modelVersionId) {
         params.set("model_version_id", filters.modelVersionId);
     }
+    if (filters.username) {
+        params.set("username", filters.username);
+    }
+    if (filters.postId) {
+        params.set("post_id", filters.postId);
+    }
+    if (filters.modelTag) {
+        params.set("model_tag", filters.modelTag);
+    }
     if (filters.nsfw) {
         params.set("nsfw", filters.nsfw);
     }
@@ -545,10 +573,16 @@ function buildEndpoint(limit, nextPage, filters) {
 }
 
 
-function buildModelSearchEndpoint(query, limit = MODEL_SEARCH_RESULT_LIMIT) {
+function buildModelSearchEndpoint(query, filters = {}, limit = MODEL_SEARCH_RESULT_LIMIT) {
     const params = new URLSearchParams();
     params.set("limit", String(limit || MODEL_SEARCH_RESULT_LIMIT));
     params.set("query", String(query || "").trim());
+    if (filters.username) {
+        params.set("username", filters.username);
+    }
+    if (filters.modelTag) {
+        params.set("model_tag", filters.modelTag);
+    }
     return `/civitai-prompt-picker/models?${params.toString()}`;
 }
 
@@ -558,6 +592,20 @@ function normalizeLookupText(value) {
         .trim()
         .toLowerCase()
         .replace(/\s+/g, " ");
+}
+
+
+function normalizeBaseModelSelectValue(value) {
+    const compact = String(value || "").trim().replace(/\s+/g, " ");
+    if (!compact) {
+        return "";
+    }
+    const normalizedDefaults = normalizeBaseModelSelectValue._defaults || (
+        normalizeBaseModelSelectValue._defaults = new Map(
+            BASE_MODEL_SUGGESTIONS.map((item) => [normalizeLookupText(item), item])
+        )
+    );
+    return normalizedDefaults.get(normalizeLookupText(compact)) || compact;
 }
 
 
@@ -638,6 +686,9 @@ class CivitaiPromptPickerUI {
                 metadataOnly: true,
                 modelId: "",
                 modelVersionId: "",
+                username: "",
+                postId: "",
+                modelTag: "",
                 nsfw: "",
                 sort: "",
                 aspectRatio: "",
@@ -669,7 +720,9 @@ class CivitaiPromptPickerUI {
             favorites: null,
         };
         this.lastDiagnostics = null;
-        this.baseModelValues = new Set(BASE_MODEL_SUGGESTIONS);
+        this.baseModelValues = new Set(
+            BASE_MODEL_SUGGESTIONS.map((value) => normalizeBaseModelSelectValue(value))
+        );
         this.viewCacheState = createViewCacheState();
 
         this.promptWidget = findWidget(node, "selected_prompt");
@@ -682,6 +735,7 @@ class CivitaiPromptPickerUI {
         this.limitWidget = findWidget(node, "limit");
 
         this.renderShell();
+        this.lastBaseModelSelectValue = this.baseModelSelect?.value || "";
         this.rememberBaseModels(this.state.favorites);
         this.syncFromWidgets();
         this.attachWidgetCallbacks();
@@ -738,6 +792,21 @@ class CivitaiPromptPickerUI {
         this.modelVersionIdInput.className = "civitai-picker-input";
         this.modelVersionIdInput.placeholder = this.t("modelVersionIdPlaceholder");
 
+        this.usernameInput = document.createElement("input");
+        this.usernameInput.className = "civitai-picker-input";
+        this.usernameInput.placeholder = this.t("usernamePlaceholder");
+        this.usernameInput.title = this.t("usernameHint");
+
+        this.postIdInput = document.createElement("input");
+        this.postIdInput.className = "civitai-picker-input";
+        this.postIdInput.placeholder = this.t("postIdPlaceholder");
+        this.postIdInput.title = this.t("postIdHint");
+
+        this.modelTagInput = document.createElement("input");
+        this.modelTagInput.className = "civitai-picker-input";
+        this.modelTagInput.placeholder = this.t("modelTagPlaceholder");
+        this.modelTagInput.title = this.t("modelTagHint");
+
         this.apiKeyInput = document.createElement("input");
         this.apiKeyInput.type = "password";
         this.apiKeyInput.className = "civitai-picker-input";
@@ -766,6 +835,9 @@ class CivitaiPromptPickerUI {
             baseModelField,
             makeField(this.t("modelIdLabel"), this.modelIdInput),
             makeField(this.t("modelVersionIdLabel"), this.modelVersionIdInput),
+            makeField(this.t("usernameLabel"), this.usernameInput),
+            makeField(this.t("postIdLabel"), this.postIdInput),
+            makeField(this.t("modelTagLabel"), this.modelTagInput),
             makeField(this.t("apiKeyLabel"), this.apiKeyInput),
             toggleWrap,
         );
@@ -891,10 +963,7 @@ class CivitaiPromptPickerUI {
             writeStoredValue(STORAGE_KEYS.nsfw, this.nsfwSelect.value);
             triggerReload();
         });
-        this.baseModelSelect.addEventListener("change", () => {
-            this.syncBaseModelControls();
-            triggerReload();
-        });
+        this.baseModelSelect.addEventListener("change", () => this.handleBaseModelSelectChange());
         this.baseModelInput.addEventListener("input", () => {
             this.handleBaseModelInputEdit();
             scheduleReload();
@@ -920,6 +989,9 @@ class CivitaiPromptPickerUI {
             this.autoResolvedModelSuggestion = null;
             scheduleReload();
         });
+        this.usernameInput.addEventListener("input", scheduleReload);
+        this.postIdInput.addEventListener("input", scheduleReload);
+        this.modelTagInput.addEventListener("input", scheduleReload);
         this.apiKeyInput.addEventListener("input", () => {
             writeStoredValue(STORAGE_KEYS.apiKey, this.apiKeyInput.value.trim());
             scheduleReload();
@@ -932,12 +1004,18 @@ class CivitaiPromptPickerUI {
             this.autoResolvedModelSuggestion = null;
             triggerReload();
         });
+        this.usernameInput.addEventListener("change", triggerReload);
+        this.postIdInput.addEventListener("change", triggerReload);
+        this.modelTagInput.addEventListener("change", triggerReload);
         this.apiKeyInput.addEventListener("change", () => {
             writeStoredValue(STORAGE_KEYS.apiKey, this.apiKeyInput.value.trim());
             triggerReload();
         });
         this.modelIdInput.addEventListener("keydown", triggerReloadOnEnter);
         this.modelVersionIdInput.addEventListener("keydown", triggerReloadOnEnter);
+        this.usernameInput.addEventListener("keydown", triggerReloadOnEnter);
+        this.postIdInput.addEventListener("keydown", triggerReloadOnEnter);
+        this.modelTagInput.addEventListener("keydown", triggerReloadOnEnter);
         this.apiKeyInput.addEventListener("keydown", triggerReloadOnEnter);
     }
 
@@ -974,9 +1052,16 @@ class CivitaiPromptPickerUI {
 
     renderBaseModelSearchSuggestions() {
         this.baseModelSuggestionsEl.replaceChildren();
+        const seenSuggestionValues = new Set();
         for (const item of this.baseModelSearchResults) {
+            const suggestionValue = String(item?.name || item?.label || "").trim();
+            const suggestionKey = normalizeLookupText(suggestionValue);
+            if (!suggestionKey || seenSuggestionValues.has(suggestionKey)) {
+                continue;
+            }
+            seenSuggestionValues.add(suggestionKey);
             const option = document.createElement("option");
-            option.value = item.name || item.label || "";
+            option.value = suggestionValue;
             option.label = item.label || item.name || "";
             this.baseModelSuggestionsEl.appendChild(option);
         }
@@ -1095,7 +1180,14 @@ class CivitaiPromptPickerUI {
 
         try {
             const response = await api.fetchApi(
-                buildModelSearchEndpoint(trimmedQuery, MODEL_SEARCH_RESULT_LIMIT),
+                buildModelSearchEndpoint(
+                    trimmedQuery,
+                    {
+                        username: this.usernameInput?.value?.trim() || "",
+                        modelTag: this.modelTagInput?.value?.trim() || "",
+                    },
+                    MODEL_SEARCH_RESULT_LIMIT
+                ),
                 {
                     cache: "no-store",
                     headers: apiKey ? { "X-Civitai-Api-Key": apiKey } : undefined,
@@ -1201,22 +1293,24 @@ class CivitaiPromptPickerUI {
     }
 
     renderBaseModelSuggestions() {
-        const knownDefaults = new Set(BASE_MODEL_SUGGESTIONS);
+        const normalizedDefaults = [...new Set(
+            BASE_MODEL_SUGGESTIONS
+                .map((value) => normalizeBaseModelSelectValue(value))
+                .filter(Boolean)
+        )];
+        const knownDefaults = new Set(normalizedDefaults);
         const extras = [...this.baseModelValues]
             .filter((value) => value && !knownDefaults.has(value))
             .sort((left, right) => left.localeCompare(right));
         const currentValue = this.baseModelSelect?.value || "";
         const customValue = this.baseModelInput?.value || "";
         const options = buildBaseModelOptions(
-            [...BASE_MODEL_SUGGESTIONS, ...extras],
+            [...normalizedDefaults, ...extras],
             this.language,
             BASE_MODEL_CUSTOM_VALUE
         );
         const rebuiltSelect = makeSelect(options);
-        rebuiltSelect.addEventListener("change", () => {
-            this.syncBaseModelControls();
-            this.requestReload({ immediate: true });
-        });
+        rebuiltSelect.addEventListener("change", () => this.handleBaseModelSelectChange());
         rebuiltSelect.className = this.baseModelSelect.className;
 
         this.baseModelSelect.replaceWith(rebuiltSelect);
@@ -1232,6 +1326,7 @@ class CivitaiPromptPickerUI {
             this.baseModelInput.value = customValue;
         }
         this.syncBaseModelControls();
+        this.lastBaseModelSelectValue = this.baseModelSelect?.value || "";
     }
 
     syncBaseModelControls() {
@@ -1242,10 +1337,37 @@ class CivitaiPromptPickerUI {
         }
     }
 
+    clearConflictingModelIdentityFiltersForPresetBaseModel() {
+        const previousValue = this.lastBaseModelSelectValue || "";
+        const currentValue = this.baseModelSelect?.value || "";
+        if (
+            !currentValue ||
+            currentValue === BASE_MODEL_CUSTOM_VALUE ||
+            currentValue === previousValue
+        ) {
+            return;
+        }
+
+        if (!this.modelIdInput.value.trim() && !this.modelVersionIdInput.value.trim()) {
+            return;
+        }
+
+        this.modelIdInput.value = "";
+        this.modelVersionIdInput.value = "";
+        this.autoResolvedModelSuggestion = null;
+    }
+
+    handleBaseModelSelectChange() {
+        this.clearConflictingModelIdentityFiltersForPresetBaseModel();
+        this.syncBaseModelControls();
+        this.lastBaseModelSelectValue = this.baseModelSelect?.value || "";
+        this.requestReload({ immediate: true });
+    }
+
     rememberBaseModels(items) {
         let changed = false;
         for (const item of items) {
-            const baseModel = String(item?.base_model || "").trim();
+            const baseModel = normalizeBaseModelSelectValue(item?.base_model);
             if (baseModel && !this.baseModelValues.has(baseModel)) {
                 this.baseModelValues.add(baseModel);
                 changed = true;
@@ -1273,6 +1395,9 @@ class CivitaiPromptPickerUI {
             metadataOnly: this.metadataOnlyInput.checked,
             modelId: this.modelIdInput.value.trim(),
             modelVersionId: this.modelVersionIdInput.value.trim(),
+            username: this.usernameInput.value.trim(),
+            postId: this.postIdInput.value.trim(),
+            modelTag: this.modelTagInput.value.trim(),
             nsfw: this.nsfwSelect.value,
             sort: this.sortSelect.value,
             aspectRatio: this.aspectRatioSelect.value,
@@ -1356,6 +1481,9 @@ class CivitaiPromptPickerUI {
             this.baseModelInput,
             this.modelIdInput,
             this.modelVersionIdInput,
+            this.usernameInput,
+            this.postIdInput,
+            this.modelTagInput,
             this.apiKeyInput,
             this.metadataOnlyInput,
         ]) {
@@ -1373,20 +1501,61 @@ class CivitaiPromptPickerUI {
         this.loaderEl.hidden = disabled || !(this.loadingMore && this.state.items.length > 0);
     }
 
+    canUseModelTagUpstream(filters = this.readFilters()) {
+        if (!filters?.modelTag || filters?.modelId || filters?.modelVersionId) {
+            return false;
+        }
+        if (this.isCustomBaseModelMode()) {
+            return Boolean(this.baseModelInput?.value?.trim());
+        }
+        return MODEL_TAG_UPSTREAM_BASE_MODELS.has(normalizeBaseModelSelectValue(filters?.baseModel || ""));
+    }
+
+    buildScopedStatusMessage(baseMessage, filters = this.readFilters()) {
+        const scopeParts = [];
+        const imageScope = [];
+        if (filters?.username) {
+            imageScope.push(`@${filters.username}`);
+        }
+        if (filters?.postId) {
+            imageScope.push(`#${filters.postId}`);
+        }
+        if (imageScope.length) {
+            scopeParts.push(this.t("imageUpstreamScope", { items: imageScope.join(", ") }));
+        }
+        if (filters?.modelTag) {
+            const modelTagText = this.canUseModelTagUpstream(filters)
+                ? filters.modelTag
+                : this.t("modelTagLimited", { tag: filters.modelTag });
+            scopeParts.push(this.t("modelUpstreamScope", { items: modelTagText }));
+        }
+        if (!scopeParts.length) {
+            return baseMessage;
+        }
+        return `${baseMessage} · ${scopeParts.join(" | ")}`;
+    }
+
     restoreFeedStatus() {
+        const filters = this.readFilters();
         if (this.state.loading) {
             this.setStatus(this.t("loadingByFilters"));
             return;
         }
         if (!this.state.items.length) {
-            this.setStatus(this.t("readyStatus"));
+            this.setStatus(this.buildScopedStatusMessage(this.t("readyStatus"), filters));
             return;
         }
         if (!this.state.hasMore) {
-            this.setStatus(this.t("loadedBottom", { count: this.state.items.length }));
+            this.setStatus(this.buildScopedStatusMessage(
+                this.t("loadedBottom", { count: this.state.items.length }),
+                filters
+            ));
             return;
         }
-        this.setStatus(this.t("loadedMore", { count: this.state.items.length }));
+        this.setStatus(this.buildScopedStatusMessage(
+            this.t("loadedMore", { count: this.state.items.length }),
+            filters
+        ));
     }
 
     toggleViewMode() {
@@ -1483,6 +1652,9 @@ class CivitaiPromptPickerUI {
             filters?.baseModel ||
             filters?.modelId ||
             filters?.modelVersionId ||
+            filters?.username ||
+            filters?.postId ||
+            filters?.modelTag ||
             filters?.metadataOnly ||
             filters?.nsfw ||
             filters?.aspectRatio ||
@@ -1501,6 +1673,9 @@ class CivitaiPromptPickerUI {
         return filters?.baseModel ||
             filters?.modelId ||
             filters?.modelVersionId ||
+            filters?.username ||
+            filters?.postId ||
+            filters?.modelTag ||
             filters?.metadataOnly ||
             filters?.nsfw ||
             filters?.aspectRatio ||

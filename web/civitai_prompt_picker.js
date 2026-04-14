@@ -598,6 +598,9 @@ function buildEndpoint(limit, nextPage, filters) {
     if (filters.minResolution) {
         params.set("min_resolution", filters.minResolution);
     }
+    if (filters.maxResolution) {
+        params.set("max_resolution", filters.maxResolution);
+    }
     if (filters.tags?.length) {
         params.set("tags", filters.tags.join(","));
     }
@@ -728,6 +731,7 @@ class CivitaiPromptPickerUI {
                 sort: "",
                 aspectRatio: "",
                 minResolution: "",
+                maxResolution: "",
                 tags: [],
                 blockTags: [],
             },
@@ -793,6 +797,7 @@ class CivitaiPromptPickerUI {
         this.nsfwSelect = makeSelect(buildNsfwOptions(this.language));
         this.aspectRatioSelect = makeSelect(buildAspectRatioOptions(this.language));
         this.resolutionSelect = makeSelect(buildResolutionOptions(this.language));
+        this.maxResolutionSelect = makeSelect(buildResolutionOptions(this.language, "max"));
         this.nsfwSelect.value = readStoredValue(STORAGE_KEYS.nsfw);
 
         this.baseModelSelect = makeSelect(
@@ -867,6 +872,7 @@ class CivitaiPromptPickerUI {
             makeField(this.t("nsfwLabel"), this.nsfwSelect),
             makeField(this.t("aspectRatioLabel"), this.aspectRatioSelect),
             makeField(this.t("resolutionLabel"), this.resolutionSelect),
+            makeField(this.t("maxResolutionLabel"), this.maxResolutionSelect),
             baseModelField,
             makeField(this.t("modelIdLabel"), this.modelIdInput),
             makeField(this.t("modelVersionIdLabel"), this.modelVersionIdInput),
@@ -994,6 +1000,7 @@ class CivitaiPromptPickerUI {
         this.sortSelect.addEventListener("change", triggerReload);
         this.aspectRatioSelect.addEventListener("change", triggerReload);
         this.resolutionSelect.addEventListener("change", triggerReload);
+        this.maxResolutionSelect.addEventListener("change", triggerReload);
         this.nsfwSelect.addEventListener("change", () => {
             writeStoredValue(STORAGE_KEYS.nsfw, this.nsfwSelect.value);
             triggerReload();
@@ -1437,6 +1444,7 @@ class CivitaiPromptPickerUI {
             sort: this.sortSelect.value,
             aspectRatio: this.aspectRatioSelect.value,
             minResolution: this.resolutionSelect.value,
+            maxResolution: this.maxResolutionSelect.value,
             tags: normalizeSelectedTags(this.state.filters.tags),
             blockTags: normalizeSelectedTags(this.state.filters.blockTags),
         };
@@ -1512,6 +1520,7 @@ class CivitaiPromptPickerUI {
             this.nsfwSelect,
             this.aspectRatioSelect,
             this.resolutionSelect,
+            this.maxResolutionSelect,
             this.baseModelSelect,
             this.baseModelInput,
             this.modelIdInput,
@@ -1694,6 +1703,7 @@ class CivitaiPromptPickerUI {
             filters?.nsfw ||
             filters?.aspectRatio ||
             filters?.minResolution ||
+            filters?.maxResolution ||
             filters?.tags?.length ||
             filters?.blockTags?.length
         );
@@ -1715,6 +1725,7 @@ class CivitaiPromptPickerUI {
             filters?.nsfw ||
             filters?.aspectRatio ||
             filters?.minResolution ||
+            filters?.maxResolution ||
             filters?.tags?.length ||
             filters?.blockTags?.length
             ? FILTERED_EMPTY_PAGE_CHAIN_LIMIT

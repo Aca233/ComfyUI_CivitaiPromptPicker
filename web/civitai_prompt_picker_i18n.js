@@ -22,6 +22,10 @@ const STRINGS = {
         longEdge1536: "长边 >= 1536",
         longEdge2048: "长边 >= 2048",
         longEdge3072: "长边 >= 3072",
+        maxLongEdge1024: "长边 <= 1024",
+        maxLongEdge1536: "长边 <= 1536",
+        maxLongEdge2048: "长边 <= 2048",
+        maxLongEdge3072: "长边 <= 3072",
         customInput: "自定义输入...",
         noMetadataAvailable: "有图片，但都没有可用 prompt metadata。关闭 metadata only 会看到更多。",
         noPublicModelVersionImages:
@@ -51,6 +55,7 @@ const STRINGS = {
         nsfwLabel: "NSFW",
         aspectRatioLabel: "图片比例",
         resolutionLabel: "最小分辨率",
+        maxResolutionLabel: "最大分辨率",
         tagsLabel: "标签",
         blockTagsLabel: "屏蔽标签",
         modelIdLabel: "模型 ID",
@@ -119,6 +124,10 @@ const STRINGS = {
         longEdge1536: "Long edge >= 1536",
         longEdge2048: "Long edge >= 2048",
         longEdge3072: "Long edge >= 3072",
+        maxLongEdge1024: "Long edge <= 1024",
+        maxLongEdge1536: "Long edge <= 1536",
+        maxLongEdge2048: "Long edge <= 2048",
+        maxLongEdge3072: "Long edge <= 3072",
         customInput: "Custom input...",
         noMetadataAvailable: "Images exist, but none contain usable prompt metadata. Disable metadata only to see more.",
         noPublicModelVersionImages:
@@ -148,6 +157,7 @@ const STRINGS = {
         nsfwLabel: "NSFW",
         aspectRatioLabel: "Aspect ratio",
         resolutionLabel: "Min resolution",
+        maxResolutionLabel: "Max resolution",
         tagsLabel: "Tags",
         blockTagsLabel: "Blocked tags",
         modelIdLabel: "Model ID",
@@ -276,12 +286,15 @@ export function buildAspectRatioOptions(language) {
 }
 
 
-export function buildResolutionOptions(language) {
+export function buildResolutionOptions(language, mode = "min") {
+    const keys = mode === "max"
+        ? ["maxLongEdge1024", "maxLongEdge1536", "maxLongEdge2048", "maxLongEdge3072"]
+        : ["longEdge1024", "longEdge1536", "longEdge2048", "longEdge3072"];
     return [
         { value: "", label: translate(language, "allSizes") },
-        { value: "1024", label: translate(language, "longEdge1024") },
-        { value: "1536", label: translate(language, "longEdge1536") },
-        { value: "2048", label: translate(language, "longEdge2048") },
-        { value: "3072", label: translate(language, "longEdge3072") },
+        { value: "1024", label: translate(language, keys[0]) },
+        { value: "1536", label: translate(language, keys[1]) },
+        { value: "2048", label: translate(language, keys[2]) },
+        { value: "3072", label: translate(language, keys[3]) },
     ];
 }

@@ -5,6 +5,8 @@ function normalizeUrl(value) {
 
 export function buildImageFallbackChain(item) {
     const candidates = [
+        normalizeUrl(item?.thumbnail_proxy_url),
+        normalizeUrl(item?.image_proxy_url),
         normalizeUrl(item?.thumbnail_url),
         normalizeUrl(item?.image_url),
     ];

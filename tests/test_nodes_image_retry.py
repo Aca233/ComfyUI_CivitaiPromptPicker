@@ -3,6 +3,7 @@ import pathlib
 import sys
 import types
 import unittest
+from collections import OrderedDict
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -42,7 +43,24 @@ def build_png_bytes(size=(1, 1), color=(255, 0, 0)):
     return buffer.getvalue()
 
 
+def build_prompt_graph(node_id="50", image_connected=False):
+    image_links = {"some_image_input": [str(node_id), 4]} if image_connected else {}
+    return {
+        str(node_id): {
+            "class_type": "Civitai Prompt Picker",
+            "inputs": {},
+        },
+        "99": {
+            "class_type": "PreviewImage",
+            "inputs": image_links,
+        },
+    }
+
+
 class CivitaiPromptPickerImageRetryTests(unittest.TestCase):
+    def setUp(self):
+        CivitaiPromptPicker._image_tensor_cache = OrderedDict()
+
     def test_candidate_image_urls_include_resized_fallback(self):
         original_url = (
             "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/"
@@ -77,6 +95,70 @@ class CivitaiPromptPickerImageRetryTests(unittest.TestCase):
         self.assertEqual(mock_get.call_args_list[0].args[0], original_url)
         self.assertEqual(mock_get.call_args_list[1].args[0], resized_url)
         self.assertEqual(tuple(image_tensor.shape), (1, 1, 1, 3))
+
+    @patch("nodes.requests.get")
+    def test_load_image_tensor_uses_memory_cache_for_same_url(self, mock_get):
+        original_url = (
+            "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/"
+            "demo/original=true/demo-image.jpeg"
+        )
+
+        success_response = Mock()
+        success_response.raise_for_status.return_value = None
+        success_response.content = build_png_bytes()
+        mock_get.return_value = success_response
+
+        first_tensor = CivitaiPromptPicker._load_image_tensor_from_url(original_url)
+        second_tensor = CivitaiPromptPicker._load_image_tensor_from_url(original_url)
+
+        self.assertEqual(mock_get.call_count, 1)
+        self.assertEqual(tuple(first_tensor.shape), (1, 1, 1, 3))
+        self.assertEqual(tuple(second_tensor.shape), (1, 1, 1, 3))
+
+    @patch.object(CivitaiPromptPicker, "_load_image_tensor_from_url")
+    def test_pick_prompt_skips_image_download_when_image_output_unlinked(self, mock_load_image):
+        node = CivitaiPromptPicker()
+
+        result = node.pick_prompt(
+            limit=12,
+            selected_prompt="demo prompt",
+            selected_negative_prompt="demo negative",
+            selected_width_text="1024",
+            selected_height_text="768",
+            selected_image_id="123",
+            next_page="",
+            selected_image_url="https://image.civitai.com/demo.jpeg",
+            prompt=build_prompt_graph(image_connected=False),
+            unique_id="50",
+        )
+
+        mock_load_image.assert_not_called()
+        self.assertEqual(result[0], "demo prompt")
+        self.assertEqual(result[1], "demo negative")
+        self.assertEqual(result[2], 1024)
+        self.assertEqual(result[3], 768)
+        self.assertEqual(tuple(result[4].shape), (1, 1, 1, 3))
+
+    @patch.object(CivitaiPromptPicker, "_load_image_tensor_from_url")
+    def test_pick_prompt_downloads_image_when_image_output_linked(self, mock_load_image):
+        node = CivitaiPromptPicker()
+        mock_load_image.return_value = FakeTensor(np.zeros((1, 2, 3, 3), dtype=np.float32))
+
+        result = node.pick_prompt(
+            limit=12,
+            selected_prompt="demo prompt",
+            selected_negative_prompt="demo negative",
+            selected_width_text="1024",
+            selected_height_text="768",
+            selected_image_id="123",
+            next_page="",
+            selected_image_url="https://image.civitai.com/demo.jpeg",
+            prompt=build_prompt_graph(image_connected=True),
+            unique_id="50",
+        )
+
+        mock_load_image.assert_called_once_with("https://image.civitai.com/demo.jpeg")
+        self.assertEqual(tuple(result[4].shape), (1, 2, 3, 3))
 
 
 if __name__ == "__main__":

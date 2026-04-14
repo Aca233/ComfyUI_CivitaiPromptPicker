@@ -4,6 +4,7 @@ import json
 import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+import requests
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
 
@@ -32,8 +33,13 @@ ALLOWED_ASPECT_RATIO_VALUES = {
     "16:9",
 }
 ALLOWED_MIN_RESOLUTION_VALUES = {"1024", "1536", "2048", "3072"}
+ALLOWED_MAX_RESOLUTION_VALUES = ALLOWED_MIN_RESOLUTION_VALUES
 DEFAULT_TIMEOUT = ClientTimeout(total=35)
 DEFAULT_HEADERS = {"User-Agent": "ComfyUI-CivitaiPromptPicker/1.0"}
+IMAGE_PROXY_ROUTE = "/civitai-prompt-picker/image-proxy"
+ALLOWED_PROXY_IMAGE_HOST_SUFFIX = ".civitai.com"
+IMAGE_PROXY_CACHE_SECONDS = 300
+IMAGE_PROXY_UPSTREAM_TIMEOUT_SECONDS = 10
 MODEL_VERSION_TO_MODEL_ID_CACHE = {}
 SIZE_PATTERN = re.compile(r"^\s*(\d+)\s*[xX]\s*(\d+)\s*$")
 FETCH_RETRY_ATTEMPTS = 3
@@ -280,6 +286,7 @@ def uses_sparse_local_filters(filters):
         or normalize_tag_filters(normalized.get("block_tags", []))
         or normalize_aspect_ratio(normalized.get("aspect_ratio", ""))
         or normalize_min_resolution(normalized.get("min_resolution", ""))
+        or normalize_max_resolution(normalized.get("max_resolution", ""))
     )
 
 
@@ -433,6 +440,13 @@ def normalize_min_resolution(value):
     return text if text in ALLOWED_MIN_RESOLUTION_VALUES else ""
 
 
+def normalize_max_resolution(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return text if text in ALLOWED_MAX_RESOLUTION_VALUES else ""
+
+
 def build_thumbnail_url(image_url, width=256):
     text = str(image_url or "").strip()
     if not text:
@@ -442,6 +456,25 @@ def build_thumbnail_url(image_url, width=256):
     if marker in text:
         return text.replace(marker, replacement, 1)
     return text
+
+
+def is_allowed_proxy_image_url(image_url):
+    text = str(image_url or "").strip()
+    if not text:
+        return False
+
+    parts = urlsplit(text)
+    host = (parts.hostname or "").strip().lower()
+    if parts.scheme != "https" or not host:
+        return False
+    return host == "civitai.com" or host.endswith(ALLOWED_PROXY_IMAGE_HOST_SUFFIX)
+
+
+def build_image_proxy_url(image_url):
+    text = str(image_url or "").strip()
+    if not is_allowed_proxy_image_url(text):
+        return ""
+    return f"{IMAGE_PROXY_ROUTE}?{urlencode({'url': text})}"
 
 
 def extract_meta_text(meta, *keys):
@@ -532,6 +565,17 @@ def item_matches_min_resolution(item, wanted_min_resolution):
     return max(width, height) >= int(wanted)
 
 
+def item_matches_max_resolution(item, wanted_max_resolution):
+    wanted = normalize_max_resolution(wanted_max_resolution)
+    if not wanted:
+        return True
+
+    width, height = get_item_dimensions(item)
+    if width <= 0 or height <= 0:
+        return False
+    return max(width, height) <= int(wanted)
+
+
 def normalize_civitai_item(item, thumbnail_width=192):
     meta = item.get("meta") or {}
     prompt = extract_meta_text(
@@ -556,11 +600,14 @@ def normalize_civitai_item(item, thumbnail_width=192):
     if not image_url or image_id is None:
         return None
 
+    thumbnail_url = build_thumbnail_url(image_url, width=thumbnail_width)
     model_version_ids = item.get("modelVersionIds") or []
     return {
         "id": str(image_id),
         "image_url": image_url,
-        "thumbnail_url": build_thumbnail_url(image_url, width=thumbnail_width),
+        "thumbnail_url": thumbnail_url,
+        "image_proxy_url": build_image_proxy_url(image_url),
+        "thumbnail_proxy_url": build_image_proxy_url(thumbnail_url),
         "prompt": prompt,
         "negative_prompt": negative_prompt,
         "has_metadata": bool(prompt or negative_prompt or size_text),
@@ -665,6 +712,7 @@ def parse_filters(query):
     block_tags = normalize_tag_filters(query.get("block_tags", ""))
     aspect_ratio = normalize_aspect_ratio(query.get("aspect_ratio", ""))
     min_resolution = normalize_min_resolution(query.get("min_resolution", ""))
+    max_resolution = normalize_max_resolution(query.get("max_resolution", ""))
 
     return {
         "period": period,
@@ -681,6 +729,7 @@ def parse_filters(query):
         "block_tags": block_tags,
         "aspect_ratio": aspect_ratio,
         "min_resolution": min_resolution,
+        "max_resolution": max_resolution,
     }
 
 
@@ -721,6 +770,7 @@ def apply_local_filters(items, filters):
     blocked_tags = normalize_tag_filters(filters.get("block_tags", []))
     wanted_aspect_ratio = normalize_aspect_ratio(filters.get("aspect_ratio", ""))
     wanted_min_resolution = normalize_min_resolution(filters.get("min_resolution", ""))
+    wanted_max_resolution = normalize_max_resolution(filters.get("max_resolution", ""))
 
     for item in items:
         if filters.get("metadata_only") and not str(item.get("prompt") or "").strip():
@@ -740,6 +790,8 @@ def apply_local_filters(items, filters):
         if wanted_aspect_ratio and not item_matches_aspect_ratio(item, wanted_aspect_ratio):
             continue
         if wanted_min_resolution and not item_matches_min_resolution(item, wanted_min_resolution):
+            continue
+        if wanted_max_resolution and not item_matches_max_resolution(item, wanted_max_resolution):
             continue
         if wanted_tags and not all(item_matches_tag_filter(item, selected_tag) for selected_tag in wanted_tags):
             continue
@@ -773,6 +825,7 @@ def build_diagnostics(upstream_items, filtered_items, next_page, filters):
                 or filters.get("block_tags")
                 or filters.get("aspect_ratio")
                 or filters.get("min_resolution")
+                or filters.get("max_resolution")
             ):
                 empty_reason = "no_images_for_filters"
             else:
@@ -832,6 +885,55 @@ async def fetch_json(url, session):
     if last_error:
         raise last_error
     raise RuntimeError("Civitai request failed without a response.")
+
+
+def _fetch_binary_sync(url):
+    response = requests.get(
+        url,
+        headers=DEFAULT_HEADERS,
+        timeout=(IMAGE_PROXY_UPSTREAM_TIMEOUT_SECONDS, IMAGE_PROXY_UPSTREAM_TIMEOUT_SECONDS),
+    )
+    if response.status_code in {401, 403}:
+        raise PermissionError(
+            "Civitai rejected the image request. Check the API Key or visibility settings."
+        )
+    response.raise_for_status()
+    content_type = str(response.headers.get("Content-Type") or "").split(";", 1)[0].strip()
+    if not content_type.startswith("image/"):
+        raise ValueError("Upstream response was not an image.")
+    return {
+        "body": response.content,
+        "content_type": content_type,
+        "etag": str(response.headers.get("ETag") or "").strip(),
+        "last_modified": str(response.headers.get("Last-Modified") or "").strip(),
+    }
+
+
+async def fetch_binary(url):
+    last_error = None
+    for attempt in range(FETCH_RETRY_ATTEMPTS):
+        try:
+            return await asyncio.to_thread(_fetch_binary_sync, url)
+        except PermissionError:
+            raise
+        except ValueError:
+            raise
+        except requests.Timeout as error:
+            last_error = TimeoutError("Civitai image request timed out.")
+            if attempt >= FETCH_RETRY_ATTEMPTS - 1:
+                break
+            await asyncio.sleep(FETCH_RETRY_DELAY_SECONDS * (attempt + 1))
+        except (requests.RequestException, TimeoutError, ClientError, asyncio.TimeoutError) as error:
+            last_error = TimeoutError("Civitai image request timed out.") if isinstance(
+                error, asyncio.TimeoutError
+            ) else error
+            if attempt >= FETCH_RETRY_ATTEMPTS - 1:
+                break
+            await asyncio.sleep(FETCH_RETRY_DELAY_SECONDS * (attempt + 1))
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("Civitai image request failed without a response.")
 
 
 async def resolve_model_id(model_version_id, session):
@@ -1145,6 +1247,31 @@ async def _handle_civitai_models(request, model_fetcher):
         return web.json_response({"error": describe_error(error)}, status=502)
 
 
+async def _handle_civitai_image_proxy(request):
+    image_url = request.rel_url.query.get("url", "").strip()
+    if not is_allowed_proxy_image_url(image_url):
+        return web.json_response({"error": "invalid image url"}, status=400)
+
+    try:
+        payload = await fetch_binary(image_url)
+        headers = {
+            "Cache-Control": f"public, max-age={IMAGE_PROXY_CACHE_SECONDS}",
+        }
+        if payload["etag"]:
+            headers["ETag"] = payload["etag"]
+        if payload["last_modified"]:
+            headers["Last-Modified"] = payload["last_modified"]
+        return web.Response(body=payload["body"], content_type=payload["content_type"], headers=headers)
+    except ValueError as error:
+        return web.json_response({"error": describe_error(error)}, status=415)
+    except PermissionError as error:
+        return web.json_response({"error": describe_error(error)}, status=403)
+    except TimeoutError as error:
+        return web.json_response({"error": describe_error(error)}, status=504)
+    except Exception as error:
+        return web.json_response({"error": describe_error(error)}, status=502)
+
+
 def add_prompt_picker_routes(routes, fetcher=fetch_civitai_images, model_fetcher=fetch_civitai_models):
     @routes.get("/civitai-prompt-picker/images")
     async def get_civitai_images(request):
@@ -1153,6 +1280,10 @@ def add_prompt_picker_routes(routes, fetcher=fetch_civitai_images, model_fetcher
     @routes.get("/civitai-prompt-picker/models")
     async def get_civitai_models(request):
         return await _handle_civitai_models(request, model_fetcher)
+
+    @routes.get(IMAGE_PROXY_ROUTE)
+    async def get_civitai_image_proxy(request):
+        return await _handle_civitai_image_proxy(request)
 
     return get_civitai_images
 

@@ -11,6 +11,16 @@ ComfyUI custom node for browsing Civitai image prompts directly inside a node.
 - Exact local NSFW filtering when Civitai upstream results are mixed
 - Faster first-screen loading with background prefill
 
+## Screenshots
+
+### Node UI
+
+![Civitai Prompt Picker node UI](assets/screenshots/node-ui-browser.png)
+
+### Workflow Preview
+
+![Civitai Prompt Picker workflow preview](assets/screenshots/workflow-preview.png)
+
 ## Install
 
 Clone this repository into your ComfyUI `custom_nodes` directory:

@@ -58,6 +58,7 @@ const FILTERED_REQUEST_BATCH_SIZE = 24;
 const FILTER_INPUT_DEBOUNCE_MS = 350;
 const MODEL_SEARCH_DEBOUNCE_MS = 220;
 const MODEL_SEARCH_RESULT_LIMIT = 8;
+const IMAGE_LOAD_TIMEOUT_MS = 8000;
 const BASE_MODEL_CUSTOM_VALUE = "__custom__";
 const STORAGE_KEYS = {
     apiKey: "comfy.civitaiPromptPicker.apiKey",
@@ -446,6 +447,40 @@ function writeStoredFavorites(items) {
         STORAGE_KEYS.favorites,
         Array.isArray(items) && items.length ? serializeFavorites(items) : ""
     );
+}
+
+
+function clearImageFallbackTimer(image) {
+    if (!image?._civitaiFallbackTimerId) {
+        return;
+    }
+    window.clearTimeout(image._civitaiFallbackTimerId);
+    image._civitaiFallbackTimerId = 0;
+}
+
+
+function tryLoadImageCandidate(image, fallbackChain, index) {
+    clearImageFallbackTimer(image);
+    const nextUrl = fallbackChain[index] || "";
+    if (!nextUrl) {
+        image.classList.add("is-failed");
+        return false;
+    }
+
+    image.classList.remove("is-failed");
+    image.dataset.fallbackIndex = String(index);
+    image.src = nextUrl;
+    image._civitaiFallbackTimerId = window.setTimeout(() => {
+        const activeIndex = Number(image.dataset.fallbackIndex || -1);
+        if (activeIndex !== index) {
+            return;
+        }
+        if (image.complete && Number(image.naturalWidth || 0) > 0) {
+            return;
+        }
+        tryLoadImageCandidate(image, fallbackChain, index + 1);
+    }, IMAGE_LOAD_TIMEOUT_MS);
+    return true;
 }
 
 
@@ -1760,23 +1795,22 @@ class CivitaiPromptPickerUI {
         image.className = "civitai-picker-image";
         image.alt = `Civitai ${item.id}`;
         const currentIndex = this.getCardMapForView(viewMode).size;
-        image.loading = currentIndex < 6 ? "eager" : "lazy";
+        image.loading = "eager";
         image.decoding = "async";
         image.setAttribute("fetchpriority", currentIndex < 6 ? "high" : "low");
         image.referrerPolicy = "no-referrer";
         const imageFallbackChain = buildImageFallbackChain(item);
         image.dataset.fallbackIndex = "0";
+        image.addEventListener("load", () => {
+            clearImageFallbackTimer(image);
+            image.classList.remove("is-failed");
+        });
         image.addEventListener("error", () => {
             const currentIndexValue = Number(image.dataset.fallbackIndex || 0);
-            const nextIndex = currentIndexValue + 1;
-            const nextUrl = imageFallbackChain[nextIndex] || "";
-            if (!nextUrl) {
-                return;
-            }
-            image.dataset.fallbackIndex = String(nextIndex);
-            image.src = nextUrl;
+            clearImageFallbackTimer(image);
+            tryLoadImageCandidate(image, imageFallbackChain, currentIndexValue + 1);
         });
-        image.src = imageFallbackChain[0] || "";
+        tryLoadImageCandidate(image, imageFallbackChain, 0);
         const width = Math.max(1, Number(item.width || 0) || 1);
         const height = Math.max(1, Number(item.height || 0) || 1);
         image.width = width;

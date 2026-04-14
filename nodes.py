@@ -8,6 +8,8 @@ from PIL import Image, ImageOps
 
 class CivitaiPromptPicker:
     REQUEST_HEADERS = {"User-Agent": "ComfyUI-CivitaiPromptPicker/1.0"}
+    REQUEST_TIMEOUT_SECONDS = 35
+    RESIZED_FALLBACK_WIDTH = 1024
 
     @staticmethod
     def _parse_dimension(value):
@@ -22,17 +24,39 @@ class CivitaiPromptPicker:
         return torch.zeros((1, 1, 1, 3), dtype=torch.float32)
 
     @classmethod
+    def _candidate_image_urls(cls, image_url):
+        text = str(image_url or "").strip()
+        if not text:
+            return []
+
+        candidates = [text]
+        original_marker = "/original=true/"
+        resized_marker = f"/width={cls.RESIZED_FALLBACK_WIDTH}/"
+        if original_marker in text:
+            candidates.append(text.replace(original_marker, resized_marker, 1))
+        return candidates
+
+    @classmethod
     def _load_image_tensor_from_url(cls, image_url):
-        response = requests.get(
-            str(image_url or "").strip(),
-            headers=cls.REQUEST_HEADERS,
-            timeout=35,
-        )
-        response.raise_for_status()
-        with Image.open(io.BytesIO(response.content)) as image:
-            normalized_image = ImageOps.exif_transpose(image).convert("RGB")
-            image_array = np.asarray(normalized_image, dtype=np.float32) / 255.0
-        return torch.from_numpy(image_array).unsqueeze(0)
+        last_error = None
+        for candidate_url in cls._candidate_image_urls(image_url):
+            try:
+                response = requests.get(
+                    candidate_url,
+                    headers=cls.REQUEST_HEADERS,
+                    timeout=cls.REQUEST_TIMEOUT_SECONDS,
+                )
+                response.raise_for_status()
+                with Image.open(io.BytesIO(response.content)) as image:
+                    normalized_image = ImageOps.exif_transpose(image).convert("RGB")
+                    image_array = np.asarray(normalized_image, dtype=np.float32) / 255.0
+                return torch.from_numpy(image_array).unsqueeze(0)
+            except Exception as error:
+                last_error = error
+
+        if last_error is not None:
+            raise last_error
+        raise ValueError("Missing image URL")
 
     @classmethod
     def INPUT_TYPES(cls):

@@ -534,7 +534,15 @@ def item_matches_min_resolution(item, wanted_min_resolution):
 
 def normalize_civitai_item(item, thumbnail_width=192):
     meta = item.get("meta") or {}
-    prompt = meta.get("prompt") or ""
+    prompt = extract_meta_text(
+        meta,
+        "prompt",
+        "Prompt",
+        "positivePrompt",
+        "positive_prompt",
+        "Positive prompt",
+        "positive prompt",
+    )
     negative_prompt = extract_meta_text(
         meta,
         "negativePrompt",
@@ -715,7 +723,7 @@ def apply_local_filters(items, filters):
     wanted_min_resolution = normalize_min_resolution(filters.get("min_resolution", ""))
 
     for item in items:
-        if filters.get("metadata_only") and not item.get("has_metadata"):
+        if filters.get("metadata_only") and not str(item.get("prompt") or "").strip():
             continue
         if wanted_base_model and not base_model_matches_filter(item.get("base_model"), wanted_base_model):
             continue
@@ -746,7 +754,9 @@ def build_diagnostics(upstream_items, filtered_items, next_page, filters):
     filtered_count = len(filtered_items)
     metadata_filtered_count = 0
     if filters.get("metadata_only"):
-        metadata_filtered_count = sum(1 for item in upstream_items if not item.get("has_metadata"))
+        metadata_filtered_count = sum(
+            1 for item in upstream_items if not str(item.get("prompt") or "").strip()
+        )
 
     empty_reason = ""
     if filtered_count == 0:

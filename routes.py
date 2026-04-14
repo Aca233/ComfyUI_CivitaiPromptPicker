@@ -82,9 +82,23 @@ LOCAL_ONLY_BASE_MODEL_FILTERS = {
     "SD 2.1",
     "SD 3",
     "SD 3.5",
+    "Anima",
+    "Illustrious",
+    "NoobAI",
+    "HiDream",
+    "ZImage",
     "Hunyuan",
+    "Hunyuan Video",
+    "PixArt a",
+    "Playground v2",
+    "Stable Cascade",
+    "Kolors",
+    "Lumina",
+    "Cosmos",
     "Wan",
+    "Wan Video",
 }
+FAMILY_PREFIX_BASE_MODEL_KEYS = {"anima", "zimage"}
 
 
 def is_allowed_next_page(next_page):
@@ -110,12 +124,43 @@ def normalize_base_model(base_model):
     aliases = {
         "sdxl": "SDXL",
         "flux": "Flux",
+        "flux1": "Flux",
+        "flux 1": "Flux",
         "pony": "Pony",
+        "anima": "Anima",
+        "illustrious": "Illustrious",
+        "noobai": "NoobAI",
+        "noob ai": "NoobAI",
+        "hidream": "HiDream",
+        "hi dream": "HiDream",
         "sd 1.5": "SD 1.5",
         "sd1.5": "SD 1.5",
+        "sd 2.0": "SD 2.0",
+        "sd2.0": "SD 2.0",
+        "sd 2.1": "SD 2.1",
+        "sd2.1": "SD 2.1",
         "sdxl turbo": "SDXL Turbo",
+        "sdxl lightning": "SDXL Lightning",
         "sd 3": "SD 3",
         "sd3": "SD 3",
+        "sd 3.5": "SD 3.5",
+        "sd3.5": "SD 3.5",
+        "hunyuan": "Hunyuan",
+        "hunyuan video": "Hunyuan Video",
+        "hyv1": "Hunyuan Video",
+        "pixarta": "PixArt a",
+        "pixart a": "PixArt a",
+        "playgroundv2": "Playground v2",
+        "playground v2": "Playground v2",
+        "stable cascade": "Stable Cascade",
+        "scascade": "Stable Cascade",
+        "kolors": "Kolors",
+        "lumina": "Lumina",
+        "wan": "Wan",
+        "wanvideo": "Wan Video",
+        "wan video": "Wan Video",
+        "cosmos": "Cosmos",
+        "zimage": "ZImage",
         "zimageturbo": "ZImageTurbo",
         "zimage turbo": "ZImageTurbo",
         "zimagebase": "ZImageBase",
@@ -142,7 +187,11 @@ def base_model_matches_filter(item_base_model, wanted_base_model):
     if not item_key:
         return False
 
-    return item_key == wanted_key or item_key.startswith(f"{wanted_key} ")
+    return (
+        item_key == wanted_key or
+        item_key.startswith(f"{wanted_key} ") or
+        (wanted_key in FAMILY_PREFIX_BASE_MODEL_KEYS and item_key.startswith(wanted_key))
+    )
 
 
 def apply_api_filter_aliases(filters):

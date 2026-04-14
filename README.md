@@ -33,6 +33,14 @@ Then restart ComfyUI.
    - `height`
 4. Optional: paste your Civitai API key into the node's `Civitai API Key` field to access more complete results, including account-visible or NSFW content when your account is allowed to see them.
 
+## Example Workflow
+
+This plugin now includes a bundled example workflow:
+
+- `workflows/civitai-prompt-picker-example.json`
+
+You can drag that JSON file directly into ComfyUI to load the example graph.
+
 ## How to get a Civitai API Key
 
 If you want more complete image results, open your Civitai account page here:

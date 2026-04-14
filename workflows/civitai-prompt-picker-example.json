@@ -1,0 +1,703 @@
+{
+  "id": "f7a250a1-53fb-496b-8c39-c60d9e764028",
+  "revision": 0,
+  "last_node_id": 56,
+  "last_link_id": 99,
+  "nodes": [
+    {
+      "id": 15,
+      "type": "VAELoader",
+      "pos": [
+        36.015817974127536,
+        508.5455966450267
+      ],
+      "size": [
+        270,
+        58
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            11
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.40",
+        "Node name for S&R": "VAELoader"
+      },
+      "widgets_values": [
+        "qwen_image_vae.safetensors"
+      ]
+    },
+    {
+      "id": 12,
+      "type": "CLIPTextEncode",
+      "pos": [
+        379.9183056566773,
+        258.0786150587092
+      ],
+      "size": [
+        534.9724235619389,
+        113.27148951094102
+      ],
+      "flags": {
+        "collapsed": true
+      },
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 85
+        },
+        {
+          "name": "text",
+          "type": "STRING",
+          "widget": {
+            "name": "text"
+          },
+          "link": 87
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            40
+          ]
+        }
+      ],
+      "title": "CLIP Text Encode (Negative Prompt)",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.65",
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia"
+      ]
+    },
+    {
+      "id": 52,
+      "type": "EmptyLatentImage",
+      "pos": [
+        387.1140948155057,
+        171.35779044316945
+      ],
+      "size": [
+        270,
+        106
+      ],
+      "flags": {
+        "collapsed": true
+      },
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "width",
+          "type": "INT",
+          "widget": {
+            "name": "width"
+          },
+          "link": 91
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "widget": {
+            "name": "height"
+          },
+          "link": 92
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            90
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.18.1",
+        "Node name for S&R": "EmptyLatentImage"
+      },
+      "widgets_values": [
+        512,
+        512,
+        1
+      ]
+    },
+    {
+      "id": 8,
+      "type": "VAEDecode",
+      "pos": [
+        533.9257951164556,
+        173.22399622036804
+      ],
+      "size": [
+        210,
+        46
+      ],
+      "flags": {
+        "collapsed": true
+      },
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 10
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 11
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "slot_index": 0,
+          "links": [
+            77,
+            98
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.40",
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 11,
+      "type": "CLIPTextEncode",
+      "pos": [
+        383.75447624727855,
+        217.01596602571
+      ],
+      "size": [
+        280.72945667613635,
+        88
+      ],
+      "flags": {
+        "collapsed": true
+      },
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 84
+        },
+        {
+          "name": "text",
+          "type": "STRING",
+          "widget": {
+            "name": "text"
+          },
+          "link": 86
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            39
+          ]
+        }
+      ],
+      "title": "CLIP Text Encode (Positive Prompt)",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.65",
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "masterpiece, best quality, score_7, safe. An anime girl wearing a black tank-top and denim shorts is standing outdoors. She's holding a rectangular sign out in front of her that reads \"ANIMA\". She's looking at the viewer with a smile. The background features some trees and blue sky with clouds."
+      ]
+    },
+    {
+      "id": 49,
+      "type": "CLIPLoader",
+      "pos": [
+        43.34708075265135,
+        337.9466308052623
+      ],
+      "size": [
+        270,
+        106
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            84,
+            85
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.18.1",
+        "Node name for S&R": "CLIPLoader"
+      },
+      "widgets_values": [
+        "qwen_3_06b_base.safetensors",
+        "wan",
+        "default"
+      ]
+    },
+    {
+      "id": 44,
+      "type": "UNETLoader",
+      "pos": [
+        39.78546386156005,
+        209.19205895755601
+      ],
+      "size": [
+        307.5999755859375,
+        82
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            95
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.11.0",
+        "Node name for S&R": "UNETLoader"
+      },
+      "widgets_values": [
+        "animayume_v04.safetensors",
+        "default"
+      ]
+    },
+    {
+      "id": 54,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        388.4310874405957,
+        46.06124498632989
+      ],
+      "size": [
+        270,
+        82
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 95
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            96
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.18.1",
+        "Node name for S&R": "LoraLoaderModelOnly"
+      },
+      "widgets_values": [
+        "anima-preview2-masterpieces-e50.safetensors",
+        1
+      ]
+    },
+    {
+      "id": 19,
+      "type": "KSampler",
+      "pos": [
+        356.66829250814,
+        308.13115359510493
+      ],
+      "size": [
+        286.26631103515615,
+        665.1584545898436
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 96
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 39
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 40
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 90
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "slot_index": 0,
+          "links": [
+            10
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.40",
+        "Node name for S&R": "KSampler"
+      },
+      "widgets_values": [
+        452630691472117,
+        "randomize",
+        30,
+        4,
+        "er_sde",
+        "simple",
+        1
+      ]
+    },
+    {
+      "id": 1,
+      "type": "PreviewImage",
+      "pos": [
+        2339.7193168900412,
+        46.87909532994804
+      ],
+      "size": [
+        745.8055789562893,
+        1028.2618737893856
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 77
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.40",
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 50,
+      "type": "Civitai Prompt Picker",
+      "pos": [
+        726.5576953424991,
+        44.66790932571489
+      ],
+      "size": [
+        885.8238671458741,
+        1227.3025999999995
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "prompt",
+          "type": "STRING",
+          "links": [
+            86
+          ]
+        },
+        {
+          "name": "negative_prompt",
+          "type": "STRING",
+          "links": [
+            87
+          ]
+        },
+        {
+          "name": "width",
+          "type": "INT",
+          "links": [
+            91
+          ]
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "links": [
+            92
+          ]
+        },
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            99
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "Aca233/ComfyUI_CivitaiPromptPicker",
+        "ver": "d961ef8543816e60ae514406488230403add1a68",
+        "Node name for S&R": "Civitai Prompt Picker",
+        "civitaiPromptPickerUiVersion": 2
+      },
+      "widgets_values": [
+        24,
+        "",
+        "",
+        "1224",
+        "2144",
+        "122908220",
+        "https://civitai.com/api/v1/images?__cpp_strategy=family_base_model&__cpp_state=eyJiYXNlX21vZGVsIjoiWkltYWdlVHVyYm8iLCJ2YXJpYW50X2luZGV4IjowLCJtb2RlbHNfbmV4dF9wYWdlIjoiaHR0cHM6Ly9jaXZpdGFpLmNvbS9hcGkvdjEvbW9kZWxzP2xpbWl0PTIwJmJhc2VNb2RlbHM9WkltYWdlVHVyYm8mY3Vyc29yPTcxMSU3Qzk2MTQlN0MyMjA5MjYyIiwicGVuZGluZ192ZXJzaW9uX2lkcyI6WyIyNzc0NDEwIiwiMjY5OTg4NiIsIjI2ODIwMzEiLCIyNjMxMjIyIiwiMjYwMTg3OSIsIjI1NzgxMDAiLCIyNTI0MDkyIiwiMjUyNjYwMCIsIjI0NjU5ODAiLCIyNTQ3Mjc2IiwiMjUyMTUxMyIsIjI1NDc3NzQiLCIyNTA3NTk3IiwiMjUwNDgzMSIsIjI1MDA5NzIiLCIyNDYyNzg5IiwiMjYxNzc1MSIsIjI2MDAwMDQiLCIyNTg0Mjg2IiwiMjU3MTUwMCIsIjI1NTI4MzYiLCIyNjc0NzYwIiwiMjUyNDI3NyIsIjI0NTIwNzEiLCIyNjA3MjEyIiwiMjg1MjgwOCIsIjI1NjQwNzAiLCIyNjEyMDEwIiwiMjQ3MDMxMiIsIjI1MzAxOTIiLCIyNDkwOTI0IiwiMjQ4MDYzNSIsIjI2NDgxODkiLCIyNjc0MTU4IiwiMjU4MTM2OCIsIjI1ODQ3NTAiLCIyNTIxMjYyIiwiMjUyMDkyNSIsIjI1NTIxMjAiLCIyNTYyNDM1IiwiMjUwMDYxMiIsIjI0NjA0MzciLCIyODI0MDk4IiwiMjc1Nzc1MSIsIjI3NTc4MDgiLCIyNzIxNTk3IiwiMjcyMTU5NiIsIjI2NTg4OTIiLCIyNjU4ODgyIiwiMjU1NTIwMSIsIjI1NTUyNTQiLCIyNTQ3ODgzIiwiMjUwNDE5NyIsIjI0NjY3NDciLCIyNTQ5MDMyIiwiMjQ0NTc0NiIsIjI0NzQ1MjkiLCIyNDQzMzQ1IiwiMjUxNTIwMyIsIjI4MTczNjYiLCIyNzgwMjc2IiwiMjc0MTA5NiIsIjI1NDcxMjAiLCIyNTA4ODcxIiwiMjQ5NzUwNiIsIjI3ODA4MDciLCIyNTk4OTI0IiwiMjU0NTU3MyIsIjI1MDUzMzEiLCIyNTI1MTAyIiwiMjQ2ODc1MyIsIjI0NzkxNDUiLCIyNDU0OTI3Il0sImN1cnJlbnRfdmVyc2lvbl9pZCI6IjI3ODg4NDkiLCJjdXJyZW50X2ltYWdlc19uZXh0X3BhZ2UiOiJodHRwczovL2Npdml0YWkuY29tL2FwaS92MS9pbWFnZXM_bGltaXQ9NDgmbW9kZWxWZXJzaW9uSWQ9Mjc4ODg0OSZuc2Z3PXRydWUmc29ydD1OZXdlc3QmY3Vyc29yPTE0NCU3QzE3NzUyNjE0MjQzMjgifQ",
+        "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/f988ff1d-c4b8-482c-ae15-fc44ba8c3809/original=true/f988ff1d-c4b8-482c-ae15-fc44ba8c3809.jpeg",
+        ""
+      ]
+    },
+    {
+      "id": 55,
+      "type": "Image Comparer (rgthree)",
+      "pos": [
+        1649.4602843629887,
+        44.45043807971444
+      ],
+      "size": [
+        667.233984375,
+        1020
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 4,
+      "inputs": [
+        {
+          "dir": 3,
+          "name": "image_a",
+          "type": "IMAGE",
+          "link": 99
+        },
+        {
+          "dir": 3,
+          "name": "image_b",
+          "type": "IMAGE",
+          "link": 98
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "cnr_id": "rgthree-comfy",
+        "ver": "8ff50e4521881eca1fe26aec9615fc9362474931",
+        "comparer_mode": "Slide"
+      },
+      "widgets_values": [
+        [
+          {
+            "name": "B",
+            "selected": true,
+            "url": "/api/view?filename=rgthree.compare._temp_dylrv_00001_.png&type=temp&subfolder=&rand=0.9065894345636855"
+          }
+        ]
+      ]
+    }
+  ],
+  "links": [
+    [
+      10,
+      19,
+      0,
+      8,
+      0,
+      "LATENT"
+    ],
+    [
+      11,
+      15,
+      0,
+      8,
+      1,
+      "VAE"
+    ],
+    [
+      39,
+      11,
+      0,
+      19,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      40,
+      12,
+      0,
+      19,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      77,
+      8,
+      0,
+      1,
+      0,
+      "IMAGE"
+    ],
+    [
+      84,
+      49,
+      0,
+      11,
+      0,
+      "CLIP"
+    ],
+    [
+      85,
+      49,
+      0,
+      12,
+      0,
+      "CLIP"
+    ],
+    [
+      86,
+      50,
+      0,
+      11,
+      1,
+      "STRING"
+    ],
+    [
+      87,
+      50,
+      1,
+      12,
+      1,
+      "STRING"
+    ],
+    [
+      90,
+      52,
+      0,
+      19,
+      3,
+      "LATENT"
+    ],
+    [
+      91,
+      50,
+      2,
+      52,
+      0,
+      "INT"
+    ],
+    [
+      92,
+      50,
+      3,
+      52,
+      1,
+      "INT"
+    ],
+    [
+      95,
+      44,
+      0,
+      54,
+      0,
+      "MODEL"
+    ],
+    [
+      96,
+      54,
+      0,
+      19,
+      0,
+      "MODEL"
+    ],
+    [
+      98,
+      8,
+      0,
+      55,
+      1,
+      "IMAGE"
+    ],
+    [
+      99,
+      50,
+      4,
+      55,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.8409500902221347,
+      "offset": [
+        233.40853528924234,
+        219.7624506474901
+      ]
+    },
+    "workflowRendererVersion": "LG",
+    "frontendVersion": "1.42.8",
+    "VHS_latentpreview": true,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true
+  },
+  "version": 0.4
+}

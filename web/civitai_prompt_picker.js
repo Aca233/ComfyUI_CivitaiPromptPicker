@@ -1789,6 +1789,64 @@ class CivitaiPromptPickerUI {
         markViewDirty(this.viewCacheState, viewMode);
     }
 
+    formatHoverValue(value) {
+        const text = String(value || "").trim();
+        return text || this.t("hoverUnknownValue");
+    }
+
+    formatHoverDate(value) {
+        const text = String(value || "").trim();
+        if (!text) {
+            return this.t("hoverUnknownValue");
+        }
+        const date = new Date(text);
+        if (Number.isNaN(date.getTime())) {
+            return text;
+        }
+        try {
+            return date.toLocaleString(resolveUiLanguage(navigator.language));
+        } catch {
+            return text;
+        }
+    }
+
+    buildItemHoverTitle(item) {
+        const modelName = String(item?.model_name || "").trim();
+        const directModelId = String(item?.model_id || "").trim();
+        const resolvedModelIds = Array.isArray(item?.resolved_model_ids)
+            ? item.resolved_model_ids
+                .map((value) => String(value || "").trim())
+                .filter(Boolean)
+            : [];
+        const modelIds = directModelId ? [directModelId] : resolvedModelIds;
+        const modelVersionName = String(item?.model_version_name || "").trim();
+        const modelVersionIds = Array.isArray(item?.model_version_ids)
+            ? item.model_version_ids
+                .map((value) => String(value || "").trim())
+                .filter(Boolean)
+            : [];
+        const resolution = String(item?.size_text || "").trim() ||
+            [item?.width_text, item?.height_text].filter(Boolean).join("x") ||
+            [item?.width, item?.height].filter(Boolean).join("x");
+        const imagePageUrl = buildCivitaiImagePageUrl(item?.id);
+        const lines = [
+            `${this.t("hoverImageIdLabel")}: ${this.formatHoverValue(item?.id)}`,
+            `${this.t("hoverModelNameLabel")}: ${this.formatHoverValue(modelName)}`,
+            `${this.t("hoverModelIdLabel")}: ${this.formatHoverValue(modelIds.join(", "))}`,
+            `${this.t("hoverModelVersionLabel")}: ${this.formatHoverValue(modelVersionName)}`,
+            `${this.t("hoverModelVersionIdLabel")}: ${this.formatHoverValue(modelVersionIds.join(", "))}`,
+            `${this.t("hoverAuthorLabel")}: ${this.formatHoverValue(item?.username)}`,
+            `${this.t("hoverBaseModelLabel")}: ${this.formatHoverValue(item?.base_model)}`,
+            `${this.t("hoverResolutionLabel")}: ${this.formatHoverValue(resolution)}`,
+            `${this.t("hoverNsfwLabel")}: ${this.formatHoverValue(item?.nsfw_level || (item?.nsfw ? "true" : "false"))}`,
+            `${this.t("hoverMetadataLabel")}: ${item?.has_metadata ? this.t("hoverYes") : this.t("hoverNo")}`,
+            `${this.t("hoverCreatedAtLabel")}: ${this.formatHoverDate(item?.created_at)}`,
+            `${this.t("hoverPostIdLabel")}: ${this.formatHoverValue(item?.post_id)}`,
+            `${this.t("hoverImagePageLabel")}: ${this.formatHoverValue(imagePageUrl)}`,
+        ];
+        return lines.join("\n");
+    }
+
     renderEmptyState(message, viewMode = this.state.viewMode) {
         this.clearGrid(viewMode);
         this.getGridForView(viewMode).appendChild(createEmptyElement(message));
@@ -1826,9 +1884,12 @@ class CivitaiPromptPickerUI {
         const height = Math.max(1, Number(item.height || 0) || 1);
         image.width = width;
         image.height = height;
+        const hoverTitle = this.buildItemHoverTitle(item);
+        image.title = hoverTitle;
 
         const media = document.createElement("div");
         media.className = "civitai-picker-card-media";
+        media.title = hoverTitle;
         const favoriteButton = document.createElement("button");
         favoriteButton.type = "button";
         favoriteButton.className = "civitai-picker-favorite";
@@ -1842,6 +1903,7 @@ class CivitaiPromptPickerUI {
         const metaId = document.createElement("div");
         metaId.className = "civitai-picker-card-id";
         metaId.textContent = `#${item.id}`;
+        metaId.title = hoverTitle;
 
         const metaInfo = document.createElement("div");
         metaInfo.className = "civitai-picker-card-meta";
@@ -1862,8 +1924,11 @@ class CivitaiPromptPickerUI {
             markers.push(`VID:${item.model_version_ids[0]}`);
         }
         metaInfo.textContent = markers.join(" · ");
+        metaInfo.title = hoverTitle;
 
         card.append(media, metaId, metaInfo);
+        card.title = hoverTitle;
+        card.setAttribute("aria-label", hoverTitle.replace(/\n+/g, " · "));
         card.addEventListener("click", () => this.selectItem(item));
         card.addEventListener("dblclick", (event) => {
             if (event.target?.closest?.(".civitai-picker-favorite")) {

@@ -41,6 +41,7 @@ ALLOWED_PROXY_IMAGE_HOST_SUFFIX = ".civitai.com"
 IMAGE_PROXY_CACHE_SECONDS = 300
 IMAGE_PROXY_UPSTREAM_TIMEOUT_SECONDS = 10
 MODEL_VERSION_TO_MODEL_ID_CACHE = {}
+MODEL_VERSION_DETAILS_CACHE = {}
 SIZE_PATTERN = re.compile(r"^\s*(\d+)\s*[xX]\s*(\d+)\s*$")
 FETCH_RETRY_ATTEMPTS = 3
 FETCH_RETRY_DELAY_SECONDS = 1.0
@@ -576,6 +577,55 @@ def item_matches_max_resolution(item, wanted_max_resolution):
     return max(width, height) <= int(wanted)
 
 
+def extract_model_id_fields(item):
+    model = item.get("model") or {}
+    model_version = item.get("modelVersion") or {}
+    model_version_model = model_version.get("model") or {}
+
+    candidates = [
+        item.get("modelId"),
+        model.get("id") if isinstance(model, dict) else None,
+        model_version.get("modelId") if isinstance(model_version, dict) else None,
+        model_version_model.get("id") if isinstance(model_version_model, dict) else None,
+    ]
+    for candidate in candidates:
+        value = str(candidate or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def extract_model_name_fields(item):
+    model = item.get("model") or {}
+    model_version = item.get("modelVersion") or {}
+    model_version_model = model_version.get("model") or {}
+
+    candidates = [
+        item.get("modelName"),
+        model.get("name") if isinstance(model, dict) else None,
+        model_version.get("modelName") if isinstance(model_version, dict) else None,
+        model_version_model.get("name") if isinstance(model_version_model, dict) else None,
+    ]
+    for candidate in candidates:
+        value = str(candidate or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def extract_model_version_name_fields(item):
+    model_version = item.get("modelVersion") or {}
+    candidates = [
+        item.get("modelVersionName"),
+        model_version.get("name") if isinstance(model_version, dict) else None,
+    ]
+    for candidate in candidates:
+        value = str(candidate or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def normalize_civitai_item(item, thumbnail_width=192):
     meta = item.get("meta") or {}
     prompt = extract_meta_text(
@@ -604,6 +654,12 @@ def normalize_civitai_item(item, thumbnail_width=192):
     model_version_ids = item.get("modelVersionIds") or []
     return {
         "id": str(image_id),
+        "model_id": extract_model_id_fields(item),
+        "model_name": extract_model_name_fields(item),
+        "model_version_name": extract_model_version_name_fields(item),
+        "username": str(item.get("username") or "").strip(),
+        "post_id": str(item.get("postId") or "").strip(),
+        "created_at": str(item.get("createdAt") or "").strip(),
         "image_url": image_url,
         "thumbnail_url": thumbnail_url,
         "image_proxy_url": build_image_proxy_url(image_url),
@@ -937,39 +993,116 @@ async def fetch_binary(url):
 
 
 async def resolve_model_id(model_version_id, session):
+    details = await resolve_model_version_details(model_version_id, session)
+    return str(details.get("model_id") or "").strip()
+
+
+def normalize_model_version_details(payload):
+    if not isinstance(payload, dict):
+        return {
+            "model_id": "",
+            "model_name": "",
+            "model_version_name": "",
+        }
+
+    model = payload.get("model") or {}
+    candidates_model_id = [
+        payload.get("modelId"),
+        model.get("id") if isinstance(model, dict) else None,
+    ]
+    candidates_model_name = [
+        payload.get("modelName"),
+        model.get("name") if isinstance(model, dict) else None,
+    ]
+    model_id = ""
+    model_name = ""
+    for candidate in candidates_model_id:
+        value = str(candidate or "").strip()
+        if value:
+            model_id = value
+            break
+    for candidate in candidates_model_name:
+        value = str(candidate or "").strip()
+        if value:
+            model_name = value
+            break
+
+    return {
+        "model_id": model_id,
+        "model_name": model_name,
+        "model_version_name": str(payload.get("name") or "").strip(),
+    }
+
+
+async def resolve_model_version_details(model_version_id, session):
     model_version_id = str(model_version_id)
-    if model_version_id in MODEL_VERSION_TO_MODEL_ID_CACHE:
-        return MODEL_VERSION_TO_MODEL_ID_CACHE[model_version_id]
+    if model_version_id in MODEL_VERSION_DETAILS_CACHE:
+        return MODEL_VERSION_DETAILS_CACHE[model_version_id]
 
     payload = await fetch_json(f"{CIVITAI_MODEL_VERSION_URL}/{model_version_id}", session)
-    model_id = (payload.get("modelId") if isinstance(payload, dict) else None) or ""
-    model_id = str(model_id) if model_id else ""
-    MODEL_VERSION_TO_MODEL_ID_CACHE[model_version_id] = model_id
-    return model_id
+    details = normalize_model_version_details(payload)
+    MODEL_VERSION_DETAILS_CACHE[model_version_id] = details
+    MODEL_VERSION_TO_MODEL_ID_CACHE[model_version_id] = details["model_id"]
+    return details
+
+
+def item_needs_model_version_details(item):
+    if not item.get("model_version_ids"):
+        return False
+    return not (
+        str(item.get("model_id") or "").strip()
+        and str(item.get("model_name") or "").strip()
+        and str(item.get("model_version_name") or "").strip()
+    )
 
 
 async def enrich_with_model_ids(items, session):
     tasks = {}
     for item in items:
+        needs_details = item_needs_model_version_details(item)
         for model_version_id in item.get("model_version_ids", []):
             key = str(model_version_id)
-            if key and key not in tasks and key not in MODEL_VERSION_TO_MODEL_ID_CACHE:
-                tasks[key] = resolve_model_id(key, session)
+            if not key or not needs_details:
+                continue
+            if key in tasks or key in MODEL_VERSION_DETAILS_CACHE:
+                continue
+            tasks[key] = resolve_model_version_details(key, session)
 
     if tasks:
         results = await __import__("asyncio").gather(*tasks.values(), return_exceptions=True)
         for key, result in zip(tasks.keys(), results):
             if isinstance(result, Exception):
+                MODEL_VERSION_DETAILS_CACHE[key] = {
+                    "model_id": "",
+                    "model_name": "",
+                    "model_version_name": "",
+                }
                 MODEL_VERSION_TO_MODEL_ID_CACHE[key] = ""
             else:
-                MODEL_VERSION_TO_MODEL_ID_CACHE[key] = result
+                MODEL_VERSION_DETAILS_CACHE[key] = result
+                MODEL_VERSION_TO_MODEL_ID_CACHE[key] = str(result.get("model_id") or "").strip()
 
     for item in items:
+        model_id = str(item.get("model_id") or "").strip()
+        model_name = str(item.get("model_name") or "").strip()
+        model_version_name = str(item.get("model_version_name") or "").strip()
         resolved = []
+        if model_id:
+            resolved.append(model_id)
         for model_version_id in item.get("model_version_ids", []):
-            model_id = MODEL_VERSION_TO_MODEL_ID_CACHE.get(str(model_version_id), "")
-            if model_id:
-                resolved.append(model_id)
+            details = MODEL_VERSION_DETAILS_CACHE.get(str(model_version_id), {})
+            resolved_model_id = str(details.get("model_id") or "").strip()
+            if resolved_model_id:
+                resolved.append(resolved_model_id)
+                if not model_id:
+                    model_id = resolved_model_id
+            if not model_name:
+                model_name = str(details.get("model_name") or "").strip()
+            if not model_version_name:
+                model_version_name = str(details.get("model_version_name") or "").strip()
+        item["model_id"] = model_id
+        item["model_name"] = model_name
+        item["model_version_name"] = model_version_name
         item["resolved_model_ids"] = sorted(set(resolved))
 
 
@@ -1066,6 +1199,7 @@ async def fetch_family_base_model_images(limit=12, next_page="", filters=None):
                         item["model_version_ids"] = [state["current_version_id"]]
 
                 visible_items = apply_local_filters(upstream_items, filters)
+                await enrich_with_model_ids(visible_items, session)
                 extend_unique_items(aggregated_upstream_items, upstream_items, seen_upstream_ids)
                 extend_unique_items(aggregated_visible_items, visible_items, seen_visible_ids)
 
@@ -1157,6 +1291,7 @@ async def fetch_civitai_images(limit=12, next_page="", filters=None):
 
             upstream_items = normalized["items"]
             visible_items = apply_local_filters(upstream_items, filters)
+            await enrich_with_model_ids(visible_items, session)
             extend_unique_items(aggregated_upstream_items, upstream_items, seen_upstream_ids)
             extend_unique_items(aggregated_visible_items, visible_items, seen_visible_ids)
 
